@@ -40,6 +40,48 @@ los datos (jugadores, partidos, votos). Si más adelante querés que todo el
 equipo vea los mismos datos en tiempo real, hay que sumar un backend (por
 ejemplo Supabase, Firebase o una API propia) — avisame y lo armamos.
 
+## Acceso de administrador
+
+La app tiene un login simple para que solo el administrador pueda cargar y
+editar jugadores y partidos. Cualquier visitante puede seguir viendo todo
+(ranking, estadísticas, partidos, votar la figura del partido) sin iniciar
+sesión — el login solo desbloquea los botones de "Sumar jugador", "Cargar
+partido", editar/borrar y cerrar votación.
+
+**Usuario y contraseña por defecto:**
+- Usuario: `admin`
+- Contraseña: `mercenarios2026`
+
+Se accede desde la pestaña **Ajustes → Acceso administrador**, o tocando el
+candado que aparece arriba a la derecha en el encabezado.
+
+**Importante:** esta es una app 100% frontend, sin servidor propio, así que
+esta verificación corre en el navegador — no es un login de nivel bancario.
+Alcanza para que el grupo no edite datos sin querer o por curiosidad, pero
+alguien con muchos conocimientos técnicos podría revisar el código del
+build. Te recomendamos cambiar la contraseña por defecto antes de compartir
+el link, configurando estas variables de entorno antes de compilar (por
+ejemplo en Vercel → Settings → Environment Variables):
+
+```
+VITE_ADMIN_USER=tu-usuario
+VITE_ADMIN_PASS_HASH=hash-sha256-de-tu-contraseña
+```
+
+Para generar el hash, abrí la consola del navegador (F12) en cualquier
+página y ejecutá:
+
+```js
+crypto.subtle.digest("SHA-256", new TextEncoder().encode("tu-contraseña-nueva"))
+  .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join("")))
+```
+
+y copiá el resultado como valor de `VITE_ADMIN_PASS_HASH`.
+
+La sesión de administrador se guarda solo en el navegador/dispositivo desde
+el que se inició sesión (igual que "quién sos"), así que cada dispositivo
+necesita loguearse por separado.
+
 ## Desarrollo local
 
 Requisitos: Node.js 18 o superior.

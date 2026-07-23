@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  Trophy, Users, CalendarDays, Vote, TrendingUp, Plus, X, Check, Lock, Shield,
+  Trophy, Users, CalendarDays, Vote, TrendingUp, TrendingDown, Minus, Plus, X, Check, Lock, Shield,
   ChevronRight, Loader2, Shirt, Goal, Medal, Circle, Home, BarChart3, Settings,
-  Star, Crown, Target, Sparkles, ShieldCheck,
+  Star, Crown, Target, Sparkles, ShieldCheck, Pencil, Trash2, LogOut, Flame, Clock, Award,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
 } from "recharts";
+import { verifyAdminCredentials } from "./lib/auth";
 
 const POSITIONS = [
   { id: "ARQ", label: "Arquero" },
@@ -237,6 +237,107 @@ function idealTeamAllTime(ranking) {
   return team;
 }
 
+// ---------- Perfil individual: logros, nivel y tendencia (solo lectura, no tocan el puntaje) ----------
+// El Promedio de Rendimiento que se muestra en la carta es SIEMPRE score/pj — el mismo
+// número que ya ordena el Ranking. No existe una fórmula paralela.
+
+function computeAchievements(player, matches, votes) {
+  let maxGoalsMatch = 0, maxAssistsMatch = 0, mvpCount = 0, mvpStreak = 0, maxMvpStreak = 0, cleanSheets = 0, prevMvp = false, bestRating = 0;
+  [...matches].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach((m) => {
+    const part = m.participants.find((p) => p.playerId === player.id);
+    if (!part) return;
+    maxGoalsMatch = Math.max(maxGoalsMatch, Number(part.goals) || 0);
+    maxAssistsMatch = Math.max(maxAssistsMatch, Number(part.assists) || 0);
+    const mv = votes[m.id] || {};
+    const counts = {};
+    Object.values(mv).forEach((v) => (counts[v] = (counts[v] || 0) + 1));
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    const isMvpThisMatch = top && top[0] === player.id && top[1] > 0;
+    if (isMvpThisMatch) {
+      mvpCount++;
+      mvpStreak = prevMvp ? mvpStreak + 1 : 1;
+      maxMvpStreak = Math.max(maxMvpStreak, mvpStreak);
+      prevMvp = true;
+    } else {
+      mvpStreak = 0;
+      prevMvp = false;
+    }
+    const r = matchRating(m, player.id, mv);
+    if (r) {
+      if (r.cleanSheet) cleanSheets++;
+      bestRating = Math.max(bestRating, r.rating);
+    }
+  });
+  const totalGoals = matches.reduce((s, m) => {
+    const part = m.participants.find((p) => p.playerId === player.id);
+    return s + (Number(part?.goals) || 0);
+  }, 0);
+  const list = [
+    { id: "gol1", label: "Primer gol", icon: Goal, unlocked: totalGoals >= 1, color: "#0D6EFD" },
+    { id: "hat", label: "Hat-trick", icon: Flame, unlocked: maxGoalsMatch >= 3, color: "#FFD54F" },
+    { id: "five", label: "5 goles en un partido", icon: Flame, unlocked: maxGoalsMatch >= 5, color: "#FFD54F" },
+    { id: "3a", label: "3 asistencias en un partido", icon: Target, unlocked: maxAssistsMatch >= 3, color: "#00C853" },
+    { id: "potm", label: "Jugador del partido", icon: Crown, unlocked: mvpCount >= 1, color: "#FFD54F" },
+    { id: "streak", label: "Racha de MVP", icon: Sparkles, unlocked: maxMvpStreak >= 2, color: "#0D6EFD" },
+    { id: "def", label: "Mejor defensor", icon: ShieldCheck, unlocked: cleanSheets >= 2, color: "#00C853" },
+    { id: "keeper", label: "Mejor arquero", icon: Lock, unlocked: false, comingSoon: true, color: "#6b7280" },
+  ];
+  return { list, maxGoalsMatch, maxAssistsMatch, maxMvpStreak, bestRating, cleanSheets };
+}
+
+// Nivel = trayectoria en el plantel, NO calidad de juego. No usa goles/asistencias/votos a propósito.
+function computeLevel(t, matches, player, achievementsUnlockedCount) {
+  const playerMatches = matches.filter((m) => m.participants.some((p) => p.playerId === player.id)).sort((a, b) => new Date(a.date) - new Date(b.date));
+  const teamLatest = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  let weeksInTeam = 0;
+  if (playerMatches[0] && teamLatest) {
+    const days = (new Date(teamLatest.date) - new Date(playerMatches[0].date)) / 86400000;
+    weeksInTeam = Math.max(0, Math.round(days / 7));
+  }
+  const xp = Math.max(0, t.pj * 15 + weeksInTeam * 3 + achievementsUnlockedCount * 20);
+  return { xp, level: 1 + Math.floor(xp / 100), progress: xp % 100, weeksInTeam };
+}
+
+// Tendencia: forma reciente (últimos partidos) contra el historial previo del mismo jugador.
+function computeTrend(player, matches, votes) {
+  const ratings = matches
+    .filter((m) => m.participants.some((p) => p.playerId === player.id))
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .map((m) => matchRating(m, player.id, votes[m.id]).rating);
+  if (ratings.length < 3) return { status: "sin-datos" };
+  const recentN = Math.min(2, Math.floor(ratings.length / 2));
+  const recent = ratings.slice(-recentN);
+  const prior = ratings.slice(0, ratings.length - recentN);
+  const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const delta = avg(recent) - avg(prior);
+  let status = "estable";
+  if (delta >= 0.15) status = "alza";
+  else if (delta <= -0.15) status = "baja";
+  return { status, delta };
+}
+
+const TREND_META = {
+  alza: { emoji: "🟢", label: "En alza", color: "#00C853" },
+  estable: { emoji: "🟡", label: "Estable", color: "#FFD54F" },
+  baja: { emoji: "🔴", label: "En baja", color: "#EF4444" },
+  "sin-datos": { emoji: "⚪", label: "Necesita más partidos", color: "#6b7280" },
+};
+
+function tierFromAvg(avg, pj, isMvpLeader) {
+  if (pj === 0) return "bronce";
+  if (avg >= 8.5 || (isMvpLeader && avg >= 7)) return "especial";
+  if (avg >= 7.5) return "oro";
+  if (avg >= 6.5) return "plata";
+  return "bronce";
+}
+
+const CARD_TIERS = {
+  bronce: { label: "Bronce", emoji: "🥉", ring: "#D97706", grad: "linear-gradient(160deg, rgba(217,119,6,0.35), #1b1108 70%)" },
+  plata: { label: "Plata", emoji: "🥈", ring: "#CBD5E1", grad: "linear-gradient(160deg, rgba(203,213,225,0.30), #14171c 70%)" },
+  oro: { label: "Oro", emoji: "🥇", ring: "#FFD54F", grad: "linear-gradient(160deg, rgba(255,213,79,0.35), #1a1608 70%)" },
+  especial: { label: "Especial MVP", emoji: "⭐", ring: "#0D6EFD", grad: "linear-gradient(160deg, rgba(13,110,253,0.45), rgba(0,200,83,0.15) 55%, #0a0d11 100%)" },
+};
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -250,6 +351,11 @@ export default function App() {
   const [showAddMatch, setShowAddMatch] = useState(false);
   const [profileId, setProfileId] = useState(null);
   const [voteDraft, setVoteDraft] = useState({});
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [editingPlayerId, setEditingPlayerId] = useState(null);
+  const [editingMatchId, setEditingMatchId] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -313,6 +419,12 @@ export default function App() {
       } catch (e) {
         setShowWho(true);
       }
+      try {
+        const r = await window.storage.get("adminSession", false);
+        if (r && JSON.parse(r.value) === true) setIsAdmin(true);
+      } catch (e) {
+        // sin sesión de administrador guardada, sigue como visitante
+      }
       setLoading(false);
     })();
   }, []);
@@ -346,6 +458,27 @@ export default function App() {
     setShowWho(false);
     try {
       await window.storage.set("currentUserId", JSON.stringify(id), false);
+    } catch (e) {}
+  }
+
+  async function loginAdmin(user, pass) {
+    const ok = await verifyAdminCredentials(user, pass);
+    if (!ok) {
+      setLoginError("Usuario o contraseña incorrectos.");
+      return;
+    }
+    setIsAdmin(true);
+    setShowLogin(false);
+    setLoginError("");
+    try {
+      await window.storage.set("adminSession", JSON.stringify(true), false);
+    } catch (e) {}
+  }
+
+  async function logoutAdmin() {
+    setIsAdmin(false);
+    try {
+      await window.storage.delete("adminSession", false);
     } catch (e) {}
   }
 
@@ -405,6 +538,7 @@ export default function App() {
   }, [ranking]);
 
   async function addPlayer(name, position) {
+    if (!isAdmin) return;
     if (players.length >= MAX_PLAYERS) {
       setError("Ya hay 30 jugadores cargados.");
       return;
@@ -414,14 +548,41 @@ export default function App() {
     setShowAddPlayer(false);
   }
 
+  async function editPlayer(id, name, position) {
+    if (!isAdmin) return;
+    await savePlayers(players.map((p) => (p.id === id ? { ...p, name: name.trim(), position } : p)));
+    setEditingPlayerId(null);
+  }
+
+  async function deletePlayer(id) {
+    if (!isAdmin) return;
+    await savePlayers(players.filter((p) => p.id !== id));
+  }
+
   async function addMatch(form) {
+    if (!isAdmin) return;
     const closedPrev = matches.map((m) => ({ ...m, votingOpen: false }));
     const newMatch = { ...form, id: "m" + Date.now(), votingOpen: true };
     await saveMatches([...closedPrev, newMatch]);
     setShowAddMatch(false);
   }
 
+  async function editMatch(id, form) {
+    if (!isAdmin) return;
+    await saveMatches(matches.map((m) => (m.id === id ? { ...m, ...form } : m)));
+    setEditingMatchId(null);
+  }
+
+  async function deleteMatch(id) {
+    if (!isAdmin) return;
+    await saveMatches(matches.filter((m) => m.id !== id));
+    const nextVotes = { ...votes };
+    delete nextVotes[id];
+    await saveVotes(nextVotes);
+  }
+
   async function closeVoting(matchId) {
+    if (!isAdmin) return;
     await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: false } : m)));
   }
 
@@ -497,13 +658,27 @@ export default function App() {
               <div className="text-[10px] text-gray-500 -mt-0.5">Estadísticas del grupo</div>
             </div>
           </div>
-          <button
-            onClick={() => setShowWho(true)}
-            className="text-xs px-3 py-1.5 rounded-full border border-gray-700 flex items-center gap-1.5"
-            style={{ background: "rgba(255,255,255,0.04)", color: "#6fa0ff" }}
-          >
-            <Shield size={13} /> {currentPlayer ? currentPlayer.name.split(" ")[0] : "Elegí quién sos"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowWho(true)}
+              className="text-xs px-3 py-1.5 rounded-full border border-gray-700 flex items-center gap-1.5"
+              style={{ background: "rgba(255,255,255,0.04)", color: "#6fa0ff" }}
+            >
+              <Shield size={13} /> {currentPlayer ? currentPlayer.name.split(" ")[0] : "Elegí quién sos"}
+            </button>
+            <button
+              onClick={() => setTab("configuracion")}
+              title={isAdmin ? "Sesión de administrador activa" : "Acceso administrador"}
+              className="w-8 h-8 rounded-full border flex items-center justify-center shrink-0"
+              style={
+                isAdmin
+                  ? { background: "rgba(13,110,253,0.12)", borderColor: "#0D6EFD" }
+                  : { background: "rgba(255,255,255,0.04)", borderColor: "#374151" }
+              }
+            >
+              {isAdmin ? <ShieldCheck size={14} style={{ color: "#0D6EFD" }} /> : <Lock size={13} className="text-gray-500" />}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -534,9 +709,14 @@ export default function App() {
             players={players}
             votes={votes}
             currentUserId={currentUserId}
+            isAdmin={isAdmin}
             onAdd={() => setShowAddMatch(true)}
             onVote={submitVote}
             onCloseVoting={closeVoting}
+            onEdit={(id) => setEditingMatchId(id)}
+            onDelete={(id) => {
+              if (window.confirm("¿Borrar este partido? Esta acción no se puede deshacer.")) deleteMatch(id);
+            }}
           />
         )}
         {tab === "estadisticas" && (
@@ -547,10 +727,28 @@ export default function App() {
           />
         )}
         {tab === "jugadores" && (
-          <JugadoresTab players={players} totals={totals} onAdd={() => setShowAddPlayer(true)} onOpen={(id) => { setProfileId(id); setTab("perfil"); }} />
+          <JugadoresTab
+            players={players}
+            totals={totals}
+            isAdmin={isAdmin}
+            onAdd={() => setShowAddPlayer(true)}
+            onOpen={(id) => { setProfileId(id); setTab("perfil"); }}
+            onEdit={(id) => setEditingPlayerId(id)}
+            onDelete={(id) => {
+              if (window.confirm("¿Borrar este jugador? Esta acción no se puede deshacer.")) deletePlayer(id);
+            }}
+          />
         )}
         {tab === "configuracion" && (
-          <ConfiguracionTab players={players} currentPlayer={currentPlayer} onChangeUser={() => setShowWho(true)} season={seasonLabel(matches)} />
+          <ConfiguracionTab
+            players={players}
+            currentPlayer={currentPlayer}
+            onChangeUser={() => setShowWho(true)}
+            season={seasonLabel(matches)}
+            isAdmin={isAdmin}
+            onLogin={() => setShowLogin(true)}
+            onLogout={logoutAdmin}
+          />
         )}
         {tab === "perfil" && (
           <PerfilTab
@@ -561,6 +759,8 @@ export default function App() {
             history={profileHistory}
             onBack={() => setTab("ranking")}
             totalMatches={matches.length}
+            matches={matches}
+            votes={votes}
           />
         )}
       </main>
@@ -614,11 +814,35 @@ export default function App() {
         </Modal>
       )}
 
-      {showAddPlayer && (
+      {showLogin && (
+        <LoginModal
+          onClose={() => { setShowLogin(false); setLoginError(""); }}
+          onLogin={loginAdmin}
+          error={loginError}
+        />
+      )}
+
+      {showAddPlayer && isAdmin && (
         <AddPlayerModal onClose={() => setShowAddPlayer(false)} onSave={addPlayer} count={players.length} />
       )}
-      {showAddMatch && (
+      {editingPlayerId && isAdmin && (
+        <AddPlayerModal
+          onClose={() => setEditingPlayerId(null)}
+          onSave={(name, position) => editPlayer(editingPlayerId, name, position)}
+          count={players.length}
+          initial={players.find((p) => p.id === editingPlayerId)}
+        />
+      )}
+      {showAddMatch && isAdmin && (
         <AddMatchModal onClose={() => setShowAddMatch(false)} onSave={addMatch} players={players} />
+      )}
+      {editingMatchId && isAdmin && (
+        <AddMatchModal
+          onClose={() => setEditingMatchId(null)}
+          onSave={(form) => editMatch(editingMatchId, form)}
+          players={players}
+          initial={matches.find((m) => m.id === editingMatchId)}
+        />
       )}
     </div>
   );
@@ -641,6 +865,59 @@ function Modal({ onClose, title, children }) {
         <div className="p-4">{children}</div>
       </div>
     </div>
+  );
+}
+
+function LoginModal({ onClose, onLogin, error }) {
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    if (!user.trim() || !pass || submitting) return;
+    setSubmitting(true);
+    await onLogin(user, pass);
+    setSubmitting(false);
+  }
+
+  return (
+    <Modal onClose={onClose} title="Acceso administrador">
+      <div className="flex flex-col gap-3">
+        <p className="text-xs text-gray-500 leading-snug">
+          Solo el administrador puede cargar y editar jugadores, partidos y resultados. El resto del grupo sigue viendo todo sin iniciar sesión.
+        </p>
+        <div>
+          <label className="text-[11px] text-gray-500">Usuario</label>
+          <input
+            value={user}
+            onChange={(e) => setUser(e.target.value)}
+            autoComplete="username"
+            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-500">Contraseña</label>
+          <input
+            type="password"
+            value={pass}
+            onChange={(e) => setPass(e.target.value)}
+            autoComplete="current-password"
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+          />
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        <button
+          disabled={!user.trim() || !pass || submitting}
+          onClick={submit}
+          className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide flex items-center justify-center gap-2"
+          style={user.trim() && pass ? { background: "#0D6EFD" } : {}}
+        >
+          {submitting ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
+          Ingresar
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -834,44 +1111,54 @@ function RankingTab({ ranking, onOpenProfile }) {
   );
 }
 
-function JugadoresTab({ players, totals, onAdd, onOpen }) {
+function JugadoresTab({ players, totals, isAdmin, onAdd, onOpen, onEdit, onDelete }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="disp text-white text-2xl tracking-wide">Jugadores <span className="text-gray-500 text-base">({players.length}/{MAX_PLAYERS})</span></h2>
-        <button
-          onClick={onAdd}
-          className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
-          style={{ background: "#0D6EFD" }}
-        >
-          <Plus size={14} /> Sumar
-        </button>
+        {isAdmin && (
+          <button
+            onClick={onAdd}
+            className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
+            style={{ background: "#0D6EFD" }}
+          >
+            <Plus size={14} /> Sumar
+          </button>
+        )}
       </div>
       <div className="grid grid-cols-1 gap-2">
-        {players.length === 0 && <p className="text-sm text-gray-500">Sumá al primer mercenario del plantel.</p>}
+        {players.length === 0 && <p className="text-sm text-gray-500">Todavía no hay jugadores cargados.</p>}
         {players.map((p) => {
           const t = totals[p.id];
           const avg = t?.pj ? t.score / t.pj : 0;
           return (
-            <button
+            <div
               key={p.id}
-              onClick={() => onOpen(p.id)}
-              className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-blue-700/60 text-left transition-colors"
+              className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-blue-700/60 transition-colors"
               style={{ background: "rgba(255,255,255,0.02)" }}
             >
-              <span className="jersey">{p.number}</span>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-gray-200 truncate">{p.name}</div>
-                <div className="text-[11px] text-gray-500">{posLabel(p.position)}</div>
-              </div>
-              <div className="text-right">
-                <div className="disp text-sm font-bold rounded-md px-1.5" style={{ color: t?.pj ? "#0b0b0b" : "#6b7280", background: t?.pj ? ratingColor(avg) : "transparent" }}>
-                  {t?.pj ? avg.toFixed(1) : "—"}
+              <button onClick={() => onOpen(p.id)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                <span className="jersey">{p.number}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-gray-200 truncate">{p.name}</div>
+                  <div className="text-[11px] text-gray-500">{posLabel(p.position)}</div>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-0.5">{t?.pj ?? 0} PJ</div>
-              </div>
-              <ChevronRight size={16} className="text-gray-600" />
-            </button>
+                <div className="text-right shrink-0">
+                  <div className="disp text-sm font-bold rounded-md px-1.5" style={{ color: t?.pj ? "#0b0b0b" : "#6b7280", background: t?.pj ? ratingColor(avg) : "transparent" }}>
+                    {t?.pj ? avg.toFixed(1) : "—"}
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">{t?.pj ?? 0} PJ</div>
+                </div>
+              </button>
+              {isAdmin ? (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => onEdit(p.id)} className="p-1.5 text-gray-500 hover:text-blue-400"><Pencil size={14} /></button>
+                  <button onClick={() => onDelete(p.id)} className="p-1.5 text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
+                </div>
+              ) : (
+                <ChevronRight size={16} className="text-gray-600 shrink-0" />
+              )}
+            </div>
           );
         })}
       </div>
@@ -879,12 +1166,13 @@ function JugadoresTab({ players, totals, onAdd, onOpen }) {
   );
 }
 
-function AddPlayerModal({ onClose, onSave, count }) {
-  const [name, setName] = useState("");
-  const [position, setPosition] = useState("MED");
+function AddPlayerModal({ onClose, onSave, count, initial }) {
+  const isEdit = !!initial;
+  const [name, setName] = useState(initial?.name || "");
+  const [position, setPosition] = useState(initial?.position || "MED");
   return (
-    <Modal onClose={onClose} title="Sumar jugador">
-      {count >= MAX_PLAYERS ? (
+    <Modal onClose={onClose} title={isEdit ? "Editar jugador" : "Sumar jugador"}>
+      {!isEdit && count >= MAX_PLAYERS ? (
         <p className="text-sm text-red-400">Ya están los 30 jugadores cargados.</p>
       ) : (
         <div className="flex flex-col gap-3">
@@ -918,7 +1206,7 @@ function AddPlayerModal({ onClose, onSave, count }) {
             className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
             style={name.trim() ? { background: "#0D6EFD" } : {}}
           >
-            Guardar jugador
+            {isEdit ? "Guardar cambios" : "Guardar jugador"}
           </button>
         </div>
       )}
@@ -926,13 +1214,14 @@ function AddPlayerModal({ onClose, onSave, count }) {
   );
 }
 
-function AddMatchModal({ onClose, onSave, players }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [mode, setMode] = useState(MODES[0]);
-  const [teamAName, setTeamAName] = useState("Equipo A");
-  const [teamBName, setTeamBName] = useState("Equipo B");
-  const [rows, setRows] = useState([]);
-  const [awards, setAwards] = useState([]);
+function AddMatchModal({ onClose, onSave, players, initial }) {
+  const isEdit = !!initial;
+  const [date, setDate] = useState(initial?.date || new Date().toISOString().slice(0, 10));
+  const [mode, setMode] = useState(initial?.mode || MODES[0]);
+  const [teamAName, setTeamAName] = useState(initial?.teamAName || "Equipo A");
+  const [teamBName, setTeamBName] = useState(initial?.teamBName || "Equipo B");
+  const [rows, setRows] = useState(initial?.participants || []);
+  const [awards, setAwards] = useState(initial?.awards || []);
   const [awardLabel, setAwardLabel] = useState("");
   const [awardPlayers, setAwardPlayers] = useState([]);
 
@@ -962,7 +1251,7 @@ function AddMatchModal({ onClose, onSave, players }) {
   }
 
   return (
-    <Modal onClose={onClose} title="Cargar partido">
+    <Modal onClose={onClose} title={isEdit ? "Editar partido" : "Cargar partido"}>
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -1094,38 +1383,51 @@ function AddMatchModal({ onClose, onSave, players }) {
           className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
           style={rows.length > 0 ? { background: "#0D6EFD" } : {}}
         >
-          Guardar partido
+          {isEdit ? "Guardar cambios" : "Guardar partido"}
         </button>
       </div>
     </Modal>
   );
 }
 
-function PartidosTab({ matches, players, votes, currentUserId, onAdd, onVote, onCloseVoting }) {
+function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, onVote, onCloseVoting, onEdit, onDelete }) {
   const sorted = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date));
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="disp text-white text-2xl tracking-wide">Partidos</h2>
-        <button
-          onClick={onAdd}
-          className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
-          style={{ background: "#0D6EFD" }}
-        >
-          <Plus size={14} /> Cargar
-        </button>
+        {isAdmin && (
+          <button
+            onClick={onAdd}
+            className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
+            style={{ background: "#0D6EFD" }}
+          >
+            <Plus size={14} /> Cargar
+          </button>
+        )}
       </div>
       <div className="flex flex-col gap-3">
-        {sorted.length === 0 && <p className="text-sm text-gray-500">Todavía no cargaste ningún partido.</p>}
+        {sorted.length === 0 && <p className="text-sm text-gray-500">Todavía no hay partidos cargados.</p>}
         {sorted.map((m) => (
-          <MatchCard key={m.id} m={m} players={players} votes={votes} currentUserId={currentUserId} onVote={onVote} onCloseVoting={onCloseVoting} />
+          <MatchCard
+            key={m.id}
+            m={m}
+            players={players}
+            votes={votes}
+            currentUserId={currentUserId}
+            isAdmin={isAdmin}
+            onVote={onVote}
+            onCloseVoting={onCloseVoting}
+            onEdit={() => onEdit(m.id)}
+            onDelete={() => onDelete(m.id)}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function MatchCard({ m, players, votes, currentUserId, onVote, onCloseVoting }) {
+function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseVoting, onEdit, onDelete }) {
   const [showTeam, setShowTeam] = useState(false);
   const teamAGoals = teamGoalsFor(m, "A");
   const teamBGoals = teamGoalsFor(m, "B");
@@ -1152,7 +1454,15 @@ function MatchCard({ m, players, votes, currentUserId, onVote, onCloseVoting }) 
       <div className="px-4 pt-3 pb-4" style={{ background: "radial-gradient(120% 100% at 50% 0%, rgba(13,110,253,0.14), transparent 65%)" }}>
         <div className="flex items-center justify-between text-[10px] text-gray-500 mb-3">
           <span>{new Date(m.date + "T00:00:00").toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}</span>
-          <span className="px-2 py-0.5 rounded-full bg-gray-900/80 border border-gray-800 disp tracking-wide">{m.mode}</span>
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded-full bg-gray-900/80 border border-gray-800 disp tracking-wide">{m.mode}</span>
+            {isAdmin && (
+              <div className="flex items-center gap-1.5">
+                <button onClick={onEdit} className="text-gray-500 hover:text-blue-400"><Pencil size={13} /></button>
+                <button onClick={onDelete} className="text-gray-500 hover:text-red-400"><Trash2 size={13} /></button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1 flex flex-col items-center gap-1.5 min-w-0">
@@ -1237,7 +1547,7 @@ function MatchCard({ m, players, votes, currentUserId, onVote, onCloseVoting }) 
               )}
             </div>
           )}
-          {m.votingOpen && (
+          {m.votingOpen && isAdmin && (
             <button onClick={() => onCloseVoting(m.id)} className="text-[10px] text-gray-600 mt-1.5 underline">Cerrar votación ahora</button>
           )}
         </div>
@@ -1363,7 +1673,7 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
   );
 }
 
-function ConfiguracionTab({ players, currentPlayer, onChangeUser, season }) {
+function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmin, onLogin, onLogout }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -1391,6 +1701,35 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season }) {
         </div>
       </div>
 
+      <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+        <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Acceso administrador</div>
+        {isAdmin ? (
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(13,110,253,0.12)", border: "1.5px solid #0D6EFD" }}>
+              <ShieldCheck size={16} style={{ color: "#0D6EFD" }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="disp text-white text-sm">Sesión de administrador activa</div>
+              <div className="text-[10px] text-gray-500">Podés cargar y editar jugadores y partidos</div>
+            </div>
+            <button onClick={onLogout} className="text-xs px-3 py-1.5 rounded-full text-gray-300 border border-gray-700 flex items-center gap-1 shrink-0">
+              <LogOut size={12} /> Salir
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 border border-gray-700" style={{ background: "rgba(255,255,255,0.03)" }}>
+              <Lock size={14} className="text-gray-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-gray-300">Solo el administrador puede editar</div>
+              <div className="text-[10px] text-gray-500">Iniciá sesión para cargar jugadores y partidos</div>
+            </div>
+            <button onClick={onLogin} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#0D6EFD" }}>Ingresar</button>
+          </div>
+        )}
+      </div>
+
       <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
         <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Acerca de</div>
         <div className="text-sm text-gray-300 disp">Mercenarios FC</div>
@@ -1400,29 +1739,199 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season }) {
   );
 }
 
-function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, totalMatches }) {
+/* ---------- Avatares por posición (silueta de acción, sin foto todavía) ---------- */
+
+function AvatarDelantero({ color }) {
+  return (
+    <svg viewBox="0 0 100 100" width="100%" height="100%">
+      <circle cx="42" cy="26" r="8" fill={color} />
+      <path d="M42 34 L38 54" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M38 54 L26 72" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M40 50 L64 42" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M41 40 L26 34" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <path d="M41 40 L56 46" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="78" cy="36" r="7" fill="none" stroke={color} strokeWidth="3" />
+    </svg>
+  );
+}
+function AvatarMediocampista({ color }) {
+  return (
+    <svg viewBox="0 0 100 100" width="100%" height="100%">
+      <circle cx="48" cy="26" r="8" fill={color} />
+      <path d="M48 34 L46 56" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M46 56 L34 76" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M46 56 L64 68" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M47 42 L30 40" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <path d="M47 42 L62 36" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="70" cy="70" r="6" fill="none" stroke={color} strokeWidth="3" />
+    </svg>
+  );
+}
+function AvatarDefensor({ color }) {
+  return (
+    <svg viewBox="0 0 100 100" width="100%" height="100%">
+      <circle cx="30" cy="34" r="8" fill={color} />
+      <path d="M30 42 L46 54" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M46 54 L74 60" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M46 54 L40 74" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M32 46 L18 52" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <path d="M32 46 L34 62" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="80" cy="62" r="6" fill="none" stroke={color} strokeWidth="3" />
+    </svg>
+  );
+}
+function AvatarArquero({ color }) {
+  return (
+    <svg viewBox="0 0 100 100" width="100%" height="100%">
+      <circle cx="50" cy="30" r="8" fill={color} />
+      <path d="M50 38 L50 56" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M50 56 L38 76" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M50 56 L62 76" stroke={color} strokeWidth="6" strokeLinecap="round" fill="none" />
+      <path d="M50 42 L26 22" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <path d="M50 42 L74 22" stroke={color} strokeWidth="5" strokeLinecap="round" fill="none" />
+      <circle cx="22" cy="18" r="6" fill="none" stroke={color} strokeWidth="3" />
+    </svg>
+  );
+}
+const POSITION_AVATAR = { DEL: AvatarDelantero, MED: AvatarMediocampista, DEF: AvatarDefensor, ARQ: AvatarArquero };
+function PositionAvatar({ position, ring, size = 72 }) {
+  const Comp = POSITION_AVATAR[position] || AvatarMediocampista;
+  return (
+    <div className="rounded-full flex items-center justify-center p-3" style={{ width: size, height: size, background: "linear-gradient(160deg,#161b22,#05070a)", border: `2px solid ${ring}` }}>
+      <Comp color={ring} />
+    </div>
+  );
+}
+
+function TrendChip({ trend }) {
+  const m = TREND_META[trend.status];
+  return (
+    <span className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-full border disp" style={{ borderColor: m.color + "55", color: m.color, background: m.color + "15" }}>
+      {m.emoji} {m.label}{trend.delta !== undefined ? ` (${trend.delta > 0 ? "+" : ""}${trend.delta.toFixed(2)})` : ""}
+    </span>
+  );
+}
+
+/* ---------- Carta de jugador estilo videojuego (solo datos reales) ---------- */
+
+function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
+  const avg = t.pj > 0 ? t.score / t.pj : 0;
+  const tier = tierFromAvg(avg, t.pj, isMvpLeader);
+  const meta = CARD_TIERS[tier];
+  const { list: achievements, maxGoalsMatch, bestRating } = computeAchievements(player, matches, votes);
+  const unlockedCount = achievements.filter((a) => a.unlocked).length;
+  const { level, progress } = computeLevel(t, matches, player, unlockedCount);
+  const trend = computeTrend(player, matches, votes);
+
+  return (
+    <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
+      <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-30 pointer-events-none" style={{ background: `radial-gradient(circle, ${meta.ring}, transparent 70%)`, filter: "blur(6px)" }} />
+
+      <div className="relative flex items-start justify-between">
+        <div>
+          <div className="disp leading-none" style={{ fontFamily: "'Bebas Neue','Oswald',sans-serif", fontSize: 40, color: meta.ring }}>{avg.toFixed(2)}</div>
+          <div className="text-[10px] text-gray-300 disp -mt-1">Promedio · {player.position}</div>
+        </div>
+        <span className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-full border disp" style={{ borderColor: meta.ring + "88", color: meta.ring, background: "#00000055" }}>
+          {meta.emoji} {meta.label}
+        </span>
+      </div>
+
+      <div className="relative flex flex-col items-center mt-1">
+        <div className="relative">
+          <PositionAvatar position={player.position} ring={meta.ring} size={78} />
+          <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 26, height: 26, fontSize: 11, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{player.number}</span>
+        </div>
+        <div className="disp text-white text-base mt-2">{player.name}</div>
+        <div className="text-[10px] text-gray-400">{posLabel(player.position)}</div>
+        <div className="mt-1.5"><TrendChip trend={trend} /></div>
+      </div>
+
+      <div className="relative mt-3">
+        <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
+          <span className="flex items-center gap-1"><Clock size={11} style={{ color: meta.ring }} /> Nivel {level} · trayectoria</span>
+          <span>{progress}/100 XP</span>
+        </div>
+        <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+          <div className="h-full rounded-full" style={{ width: progress + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
+        </div>
+      </div>
+
+      <div className="relative grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t" style={{ borderColor: meta.ring + "33" }}>
+        {[["PJ", t.pj], ["Goles", t.goals], ["Asist.", t.assists], ["MVP", t.votes]].map(([label, val]) => (
+          <div key={label} className="text-center">
+            <div className="disp text-white text-sm">{val}</div>
+            <div className="text-[8px] text-gray-500">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="relative flex items-center justify-between mt-3 pt-3 border-t text-[10px]" style={{ borderColor: meta.ring + "33" }}>
+        <span className="flex items-center gap-1 text-gray-400"><Medal size={11} style={{ color: meta.ring }} /> {unlockedCount}/{achievements.length} logros</span>
+        <span className="flex items-center gap-1 text-gray-400"><Award size={11} style={{ color: "#FFD54F" }} /> Mejor partido: {bestRating.toFixed(1)} · {maxGoalsMatch} goles</span>
+      </div>
+    </div>
+  );
+}
+
+function PersonalRecords({ player, matches, votes }) {
+  const { maxGoalsMatch, maxAssistsMatch, maxMvpStreak, bestRating } = computeAchievements(player, matches, votes);
+  const rows = [
+    { label: "Mejor puntuación en un partido", value: bestRating.toFixed(1), icon: Star, color: "#FFD54F" },
+    { label: "Más goles en un partido", value: maxGoalsMatch, icon: Goal, color: "#0D6EFD" },
+    { label: "Más asistencias en un partido", value: maxAssistsMatch, icon: Target, color: "#00C853" },
+    { label: "Mayor racha de MVP", value: maxMvpStreak, icon: Crown, color: "#FFD54F" },
+  ];
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map((r) => (
+        <div key={r.label} className="flex items-center justify-between text-xs">
+          <span className="flex items-center gap-1.5 text-gray-400"><r.icon size={12} style={{ color: r.color }} /> {r.label}</span>
+          <span className="disp" style={{ color: r.color }}>{r.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AchievementsGrid({ player, matches, votes }) {
+  const { list } = computeAchievements(player, matches, votes);
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {list.map((a) => (
+        <div key={a.id} className={`rounded-2xl border p-3 flex flex-col items-center text-center gap-1.5 ${a.unlocked ? "" : "opacity-40"}`} style={{ borderColor: a.unlocked ? a.color + "55" : "#1f2937", background: a.unlocked ? a.color + "14" : "rgba(255,255,255,0.02)" }}>
+          {a.comingSoon ? <Lock size={20} className="text-gray-600" /> : <a.icon size={20} style={{ color: a.unlocked ? a.color : "#4b5563" }} />}
+          <span className="text-[11px] disp text-gray-200 leading-tight">{a.label}</span>
+          <span className="text-[9px] text-gray-500">{a.comingSoon ? "Próximamente" : a.unlocked ? "Desbloqueado" : "Bloqueado"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const PERFIL_SECTIONS = [
+  ["carta", "Carta"],
+  ["evolucion", "Evolución"],
+  ["logros", "Logros"],
+];
+
+function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, matches, votes }) {
+  const [section, setSection] = useState("carta");
+
   if (!profilePlayer) {
     return <p className="text-sm text-gray-500">Sumá jugadores para ver perfiles.</p>;
   }
   const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0 };
   const avg = t.pj > 0 ? t.score / t.pj : 0;
   const last5 = history.slice(-5);
-
-  const radarData = [
-    { skill: "Ataque", value: Math.min(100, t.pj > 0 ? (t.goals / t.pj) * 40 : 0) },
-    { skill: "Pase", value: Math.min(100, t.pj > 0 ? (t.assists / t.pj) * 55 : 0) },
-    { skill: "Nota", value: Math.min(100, (avg / RATING_MAX) * 100) },
-    { skill: "Figura", value: Math.min(100, t.pj > 0 ? (t.votes / t.pj) * 45 : 0) },
-    { skill: "Regularidad", value: Math.min(100, totalMatches > 0 ? (t.pj / totalMatches) * 100 : 0) },
-    { skill: "Disciplina", value: Math.max(0, 100 - (t.pj > 0 ? (t.ownGoals / t.pj) * 100 : 0)) },
-  ];
-
-  const badges = [];
-  if (t.goals >= 5) badges.push({ label: "Killer", icon: Goal, color: "#0D6EFD" });
-  if (t.assists >= 5) badges.push({ label: "Asistidor", icon: Target, color: "#00C853" });
-  if (t.votes >= 3) badges.push({ label: "Figura habitual", icon: Crown, color: "#FFD54F" });
-  if (avg >= 7.5 && t.pj >= 3) badges.push({ label: "Élite", icon: Star, color: "#00C853" });
-  if (t.pj >= 8) badges.push({ label: "Titular indiscutido", icon: ShieldCheck, color: "#0D6EFD" });
+  const mvpLeaderId = [...players].map((p) => ({ id: p.id, votes: (totals[p.id] || {}).votes || 0 })).sort((a, b) => b.votes - a.votes)[0]?.id;
+  const isMvpLeader = profilePlayer.id === mvpLeaderId;
+  const tier = tierFromAvg(avg, t.pj, isMvpLeader);
+  const meta = CARD_TIERS[tier];
+  const trend = computeTrend(profilePlayer, matches, votes);
+  const { list: achievements } = computeAchievements(profilePlayer, matches, votes);
+  const unlockedCount = achievements.filter((a) => a.unlocked).length;
+  const { level, progress, weeksInTeam } = computeLevel(t, matches, profilePlayer, unlockedCount);
 
   return (
     <div>
@@ -1436,89 +1945,109 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
         {players.map((p) => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}
       </select>
 
-      <div
-        className="relative rounded-[24px] overflow-hidden p-5 mb-4 border"
-        style={{
-          borderColor: ratingColor(avg) + "55",
-          background: `linear-gradient(160deg, ${ratingColor(avg)}22, #0b0d11 65%)`,
-          boxShadow: `0 12px 32px -12px ${ratingColor(avg)}66`,
-        }}
-      >
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="disp text-4xl" style={{ color: ratingColor(avg) }}>{avg ? avg.toFixed(1) : "—"}</div>
-            <div className="text-[9px] text-gray-400 uppercase tracking-wider">Nota general</div>
+      <div className="flex gap-1.5 mb-4 overflow-x-auto">
+        {PERFIL_SECTIONS.map(([key, label]) => {
+          const active = section === key;
+          return (
+            <button
+              key={key}
+              onClick={() => setSection(key)}
+              className="text-xs px-3 py-1.5 rounded-full border shrink-0 disp"
+              style={active ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {section === "carta" && (
+        <PlayerCard player={profilePlayer} t={t} matches={matches} votes={votes} isMvpLeader={isMvpLeader} />
+      )}
+
+      {section === "evolucion" && (
+        <div>
+          <div
+            className="relative rounded-[24px] overflow-hidden p-5 mb-4 border"
+            style={{ borderColor: meta.ring + "55", background: `linear-gradient(160deg, ${meta.ring}22, #0b0d11 65%)`, boxShadow: `0 12px 32px -12px ${meta.ring}66` }}
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="disp text-4xl" style={{ color: meta.ring }}>{avg ? avg.toFixed(2) : "—"}</div>
+                <div className="text-[9px] text-gray-400 uppercase tracking-wider">Promedio de rendimiento</div>
+              </div>
+              <div className="relative">
+                <PositionAvatar position={profilePlayer.position} ring={meta.ring} size={56} />
+                <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 20, height: 20, fontSize: 9, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{profilePlayer.number}</span>
+              </div>
+            </div>
+            <div className="mt-2">
+              <div className="disp text-white text-2xl leading-tight">{profilePlayer.name}</div>
+              <div className="text-xs text-gray-400">{posLabel(profilePlayer.position)} · {meta.emoji} {meta.label}</div>
+            </div>
+            <div className="mt-2"><TrendChip trend={trend} /></div>
+            <div className="mt-4">
+              <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1">
+                <span className="flex items-center gap-1"><Clock size={12} style={{ color: meta.ring }} /> Nivel {level} — trayectoria en el plantel</span>
+                <span>{progress}/100 XP</span>
+              </div>
+              <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: progress + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
+              </div>
+              <div className="text-[9px] text-gray-600 mt-1">{t.pj} partidos disputados · ~{weeksInTeam} semanas en el plantel · {unlockedCount} logros — el nivel no depende del promedio.</div>
+            </div>
           </div>
-          <span className="jersey" style={{ width: 48, height: 48, fontSize: 18, borderColor: ratingColor(avg), color: ratingColor(avg) }}>{profilePlayer.number}</span>
-        </div>
-        <div className="mt-2">
-          <div className="disp text-white text-2xl leading-tight">{profilePlayer.name}</div>
-          <div className="text-xs text-gray-400">{posLabel(profilePlayer.position)}</div>
-        </div>
-        {badges.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-3">
-            {badges.map((b) => (
-              <span key={b.label} className="text-[9px] flex items-center gap-1 px-2 py-1 rounded-full border" style={{ borderColor: b.color + "55", color: b.color, background: b.color + "15" }}>
-                <b.icon size={10} /> {b.label}
-              </span>
+
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {[["PJ", t.pj], ["Goles", t.goals], ["Asist.", t.assists], ["Votos MVP", t.votes]].map(([label, val]) => (
+              <div key={label} className="rounded-xl py-2.5 text-center border border-gray-800" style={{ background: "rgba(255,255,255,0.03)" }}>
+                <div className="disp text-white text-base">{val}</div>
+                <div className="text-[9px] text-gray-500">{label}</div>
+              </div>
             ))}
           </div>
-        )}
-      </div>
 
-      <div className="grid grid-cols-4 gap-2 mb-4">
-        {[["PJ", t.pj], ["Goles", t.goals], ["Asist.", t.assists], ["Votos MVP", t.votes]].map(([label, val]) => (
-          <div key={label} className="rounded-xl py-2.5 text-center border border-gray-800" style={{ background: "rgba(255,255,255,0.03)" }}>
-            <div className="disp text-white text-base">{val}</div>
-            <div className="text-[9px] text-gray-500">{label}</div>
-          </div>
-        ))}
-      </div>
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Evolución del promedio</h3>
+          {history.length < 2 ? (
+            <p className="text-xs text-gray-600 mb-4">Se necesitan al menos 2 partidos cargados para ver la evolución.</p>
+          ) : (
+            <div className="rounded-2xl border border-gray-800 p-2 mb-4" style={{ height: 180, background: "rgba(255,255,255,0.02)" }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history}>
+                  <CartesianGrid stroke="#1a1f2b" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#6b7280" }} tickFormatter={(d) => d.slice(5)} />
+                  <YAxis domain={[2, 10]} tick={{ fontSize: 9, fill: "#6b7280" }} width={24} />
+                  <Tooltip contentStyle={{ background: "#0c0f14", border: "1px solid #1f2937", fontSize: 11 }} labelStyle={{ color: "#9ca3af" }} />
+                  <Line type="monotone" dataKey="score" stroke="#0D6EFD" strokeWidth={2.5} dot={{ r: 3, fill: "#0D6EFD" }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
 
-      {t.pj > 0 && (
-        <div className="mb-4">
-          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Radar de habilidades</h3>
-          <div className="rounded-2xl border border-gray-800 p-2" style={{ background: "rgba(255,255,255,0.02)", height: 220 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <RadarChart data={radarData} outerRadius="70%">
-                <PolarGrid stroke="#1f2937" />
-                <PolarAngleAxis dataKey="skill" tick={{ fontSize: 9, fill: "#9ca3af" }} />
-                <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
-                <Radar dataKey="value" stroke="#0D6EFD" fill="#0D6EFD" fillOpacity={0.35} />
-              </RadarChart>
-            </ResponsiveContainer>
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Últimos partidos</h3>
+          <div className="flex flex-col gap-1.5 mb-2">
+            {last5.slice().reverse().map((h) => (
+              <div key={h.id} className="flex items-center justify-between rounded-xl px-3 py-2 text-xs border border-gray-800" style={{ background: "rgba(255,255,255,0.02)" }}>
+                <span className="text-gray-400">{new Date(h.date + "T00:00:00").toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}</span>
+                <span className="text-gray-500">{h.mode}</span>
+                <span className="disp font-bold rounded-md px-1.5" style={{ color: "#0b0b0b", background: ratingColor(h.score) }}>{h.score.toFixed(1)}</span>
+              </div>
+            ))}
+            {history.length === 0 && <p className="text-xs text-gray-600">Todavía no jugó ningún partido cargado.</p>}
           </div>
         </div>
       )}
 
-      <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Evolución</h3>
-      {history.length < 2 ? (
-        <p className="text-xs text-gray-600 mb-4">Se necesitan al menos 2 partidos cargados para ver la evolución.</p>
-      ) : (
-        <div className="rounded-2xl border border-gray-800 p-2 mb-4" style={{ height: 180, background: "rgba(255,255,255,0.02)" }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={history}>
-              <CartesianGrid stroke="#1a1f2b" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#6b7280" }} tickFormatter={(d) => d.slice(5)} />
-              <YAxis domain={[2, 10]} tick={{ fontSize: 9, fill: "#6b7280" }} width={24} />
-              <Tooltip contentStyle={{ background: "#0c0f14", border: "1px solid #1f2937", fontSize: 11 }} labelStyle={{ color: "#9ca3af" }} />
-              <Line type="monotone" dataKey="score" stroke="#0D6EFD" strokeWidth={2.5} dot={{ r: 3, fill: "#0D6EFD" }} />
-            </LineChart>
-          </ResponsiveContainer>
+      {section === "logros" && (
+        <div>
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Logros</h3>
+          <AchievementsGrid player={profilePlayer} matches={matches} votes={votes} />
+          <h3 className="disp text-sm text-gray-300 mb-2 mt-5 tracking-wide uppercase">Tus récords personales</h3>
+          <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
+            <PersonalRecords player={profilePlayer} matches={matches} votes={votes} />
+          </div>
         </div>
       )}
-
-      <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Últimos partidos</h3>
-      <div className="flex flex-col gap-1.5 mb-2">
-        {last5.slice().reverse().map((h) => (
-          <div key={h.id} className="flex items-center justify-between rounded-xl px-3 py-2 text-xs border border-gray-800" style={{ background: "rgba(255,255,255,0.02)" }}>
-            <span className="text-gray-400">{new Date(h.date + "T00:00:00").toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}</span>
-            <span className="text-gray-500">{h.mode}</span>
-            <span className="disp font-bold rounded-md px-1.5" style={{ color: "#0b0b0b", background: ratingColor(h.score) }}>{h.score.toFixed(1)}</span>
-          </div>
-        ))}
-        {history.length === 0 && <p className="text-xs text-gray-600">Todavía no jugó ningún partido cargado.</p>}
-      </div>
     </div>
   );
 }

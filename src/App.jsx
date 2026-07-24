@@ -16,6 +16,19 @@ const POSITIONS = [
   { id: "DEL", label: "Delantero" },
 ];
 const MODES = ["Fútbol 5", "Fútbol 6", "Fútbol 8", "Fútbol 9"];
+// Puntuación ponderada por modalidad (goles/asistencias reales -> puntos ponderados).
+// F9 y F8: 1 punto por gol/asistencia · F6 y F5: 0,5 puntos por gol/asistencia.
+const MODE_POINT_VALUE = {
+  "Fútbol 9": 1,
+  "Fútbol 8": 1,
+  "Fútbol 6": 0.5,
+  "Fútbol 5": 0.5,
+};
+function modePointValue(mode) {
+  return MODE_POINT_VALUE[mode] ?? 1;
+}
+// 1 voto MVP recibido = 0,1 puntos acumulados históricamente.
+const MVP_VOTE_POINT = 0.1;
 const MAX_PLAYERS = 30;
 const AWARD_INC = 0.5;
 const WIN_INC = 0.5;
@@ -197,7 +210,7 @@ function seasonLabel(matches) {
 
 function computeStatsLeaders(players, totals, matches, votes) {
   const withPj = players
-    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0 } }))
+    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0 } }))
     .filter((x) => x.t.pj > 0);
 
   const topScorer = [...withPj].sort((a, b) => b.t.goals - a.t.goals)[0];
@@ -205,6 +218,7 @@ function computeStatsLeaders(players, totals, matches, votes) {
   const mostMVP = [...withPj].sort((a, b) => b.t.votes - a.t.votes)[0];
   const mostMatches = [...withPj].sort((a, b) => b.t.pj - a.t.pj)[0];
   const highestAvg = [...withPj].sort((a, b) => b.t.score / b.t.pj - a.t.score / a.t.pj)[0];
+  const mostOffensive = [...withPj].sort((a, b) => (b.t.offensive || 0) - (a.t.offensive || 0))[0];
 
   const keepers = withPj.filter((x) => x.p.position === "ARQ");
   const cleanSheetsMap = {};
@@ -220,7 +234,29 @@ function computeStatsLeaders(players, totals, matches, votes) {
 
   const breakout = [...withPj].filter((x) => x.t.pj <= 3).sort((a, b) => b.t.score / b.t.pj - a.t.score / a.t.pj)[0];
 
-  return { topScorer, topAssist, mostMVP, mostMatches, highestAvg, bestKeeper, cleanSheetsMap, breakout };
+  // 📚 Récords históricos del club: mejor marca individual en un partido.
+  let bestSingleGoal = null, bestSingleAssist = null;
+  matches.forEach((m) => {
+    m.participants.forEach((part) => {
+      const pl = players.find((x) => x.id === part.playerId);
+      if (!pl) return;
+      const g = Number(part.goals) || 0;
+      const a = Number(part.assists) || 0;
+      if (!bestSingleGoal || g > bestSingleGoal.value) bestSingleGoal = { p: pl, t: totals[pl.id], value: g };
+      if (!bestSingleAssist || a > bestSingleAssist.value) bestSingleAssist = { p: pl, t: totals[pl.id], value: a };
+    });
+  });
+
+  // Racha goleadora y logros: requieren recorrer el historial de cada jugador.
+  const withAch = withPj.map((x) => ({ ...x, ach: computeAchievements(x.p, matches, votes) }));
+  const bestStreak = [...withAch].sort((a, b) => b.ach.maxGoalStreak - a.ach.maxGoalStreak)[0];
+  const mostAchievements = [...withAch]
+    .sort((a, b) => b.ach.list.filter((i) => i.unlocked).length - a.ach.list.filter((i) => i.unlocked).length)[0];
+
+  return {
+    topScorer, topAssist, mostMVP, mostMatches, highestAvg, bestKeeper, cleanSheetsMap, breakout,
+    mostOffensive, bestSingleGoal, bestSingleAssist, bestStreak, mostAchievements,
+  };
 }
 
 function idealTeamAllTime(ranking) {
@@ -243,11 +279,20 @@ function idealTeamAllTime(ranking) {
 
 function computeAchievements(player, matches, votes) {
   let maxGoalsMatch = 0, maxAssistsMatch = 0, mvpCount = 0, mvpStreak = 0, maxMvpStreak = 0, cleanSheets = 0, prevMvp = false, bestRating = 0;
+  let goalStreak = 0, maxGoalStreak = 0, hasPerfectMatch = false;
   [...matches].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach((m) => {
     const part = m.participants.find((p) => p.playerId === player.id);
     if (!part) return;
-    maxGoalsMatch = Math.max(maxGoalsMatch, Number(part.goals) || 0);
-    maxAssistsMatch = Math.max(maxAssistsMatch, Number(part.assists) || 0);
+    const partGoals = Number(part.goals) || 0;
+    const partAssists = Number(part.assists) || 0;
+    maxGoalsMatch = Math.max(maxGoalsMatch, partGoals);
+    maxAssistsMatch = Math.max(maxAssistsMatch, partAssists);
+    if (partGoals > 0) {
+      goalStreak++;
+      maxGoalStreak = Math.max(maxGoalStreak, goalStreak);
+    } else {
+      goalStreak = 0;
+    }
     const mv = votes[m.id] || {};
     const counts = {};
     Object.values(mv).forEach((v) => (counts[v] = (counts[v] || 0) + 1));
@@ -258,6 +303,7 @@ function computeAchievements(player, matches, votes) {
       mvpStreak = prevMvp ? mvpStreak + 1 : 1;
       maxMvpStreak = Math.max(maxMvpStreak, mvpStreak);
       prevMvp = true;
+      if (partGoals > 0 && partAssists > 0) hasPerfectMatch = true;
     } else {
       mvpStreak = 0;
       prevMvp = false;
@@ -272,17 +318,32 @@ function computeAchievements(player, matches, votes) {
     const part = m.participants.find((p) => p.playerId === player.id);
     return s + (Number(part?.goals) || 0);
   }, 0);
+  const totalAssists = matches.reduce((s, m) => {
+    const part = m.participants.find((p) => p.playerId === player.id);
+    return s + (Number(part?.assists) || 0);
+  }, 0);
+  const mvpVotesTotal = matches.reduce((s, m) => {
+    const mv = votes[m.id] || {};
+    return s + Object.values(mv).filter((v) => v === player.id).length;
+  }, 0);
+  const isLeyenda = mvpCount >= 3 && totalGoals + totalAssists >= 25;
   const list = [
     { id: "gol1", label: "Primer gol", icon: Goal, unlocked: totalGoals >= 1, color: "#0D6EFD" },
     { id: "hat", label: "Hat-trick", icon: Flame, unlocked: maxGoalsMatch >= 3, color: "#FFD54F" },
-    { id: "five", label: "5 goles en un partido", icon: Flame, unlocked: maxGoalsMatch >= 5, color: "#FFD54F" },
-    { id: "3a", label: "3 asistencias en un partido", icon: Target, unlocked: maxAssistsMatch >= 3, color: "#00C853" },
+    { id: "poker", label: "Póker (4 goles en un partido)", icon: Flame, unlocked: maxGoalsMatch >= 4, color: "#FFD54F" },
+    { id: "manita", label: "Manita (5 goles en un partido)", icon: Flame, unlocked: maxGoalsMatch >= 5, color: "#FFD54F" },
+    { id: "depredador", label: "Depredador (goles históricos)", icon: Flame, unlocked: totalGoals >= 20, color: "#EF4444" },
+    { id: "asist1", label: "Primer pase gol", icon: Target, unlocked: totalAssists >= 1, color: "#00C853" },
+    { id: "maestro", label: "Maestro del pase (3 asist. en un partido)", icon: Target, unlocked: maxAssistsMatch >= 3, color: "#00C853" },
+    { id: "asistHist", label: "Asistente histórico", icon: Target, unlocked: totalAssists >= 10, color: "#00C853" },
     { id: "potm", label: "Jugador del partido", icon: Crown, unlocked: mvpCount >= 1, color: "#FFD54F" },
     { id: "streak", label: "Racha de MVP", icon: Sparkles, unlocked: maxMvpStreak >= 2, color: "#0D6EFD" },
+    { id: "perfecto", label: "Partido perfecto (MVP + gol + asistencia)", icon: Sparkles, unlocked: hasPerfectMatch, color: "#0D6EFD" },
     { id: "def", label: "Mejor defensor", icon: ShieldCheck, unlocked: cleanSheets >= 2, color: "#00C853" },
+    { id: "leyenda", label: "Leyenda Mercenarios", icon: Crown, unlocked: isLeyenda, color: "#FFD54F" },
     { id: "keeper", label: "Mejor arquero", icon: Lock, unlocked: false, comingSoon: true, color: "#6b7280" },
   ];
-  return { list, maxGoalsMatch, maxAssistsMatch, maxMvpStreak, bestRating, cleanSheets };
+  return { list, maxGoalsMatch, maxAssistsMatch, maxMvpStreak, maxGoalStreak, bestRating, cleanSheets, totalGoals, totalAssists, mvpVotesTotal };
 }
 
 // Nivel = trayectoria en el plantel, NO calidad de juego. No usa goles/asistencias/votos a propósito.
@@ -484,9 +545,10 @@ export default function App() {
 
   const totals = useMemo(() => {
     const map = {};
-    players.forEach((p) => (map[p.id] = { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0 }));
+    players.forEach((p) => (map[p.id] = { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0 }));
     matches.forEach((m) => {
       const mv = votes[m.id];
+      const w = modePointValue(m.mode);
       m.participants.forEach((p) => {
         const r = matchRating(m, p.playerId, mv);
         if (r && map[p.playerId]) {
@@ -496,8 +558,17 @@ export default function App() {
           map[p.playerId].votes += r.votes;
           map[p.playerId].ownGoals += r.ownGoals;
           map[p.playerId].score += r.rating;
+          map[p.playerId].goalsW += r.goals * w;
+          map[p.playerId].assistsW += r.assists * w;
         }
       });
+    });
+    // Puntos de votos MVP (1 voto = 0,1 pts) y participación ofensiva (goles + asist. ponderados).
+    Object.values(map).forEach((t) => {
+      t.goalsW = Math.round(t.goalsW * 100) / 100;
+      t.assistsW = Math.round(t.assistsW * 100) / 100;
+      t.mvpPoints = Math.round(t.votes * MVP_VOTE_POINT * 100) / 100;
+      t.offensive = Math.round((t.goalsW + t.assistsW) * 100) / 100;
     });
     return map;
   }, [players, matches, votes]);
@@ -1263,6 +1334,7 @@ function AddMatchModal({ onClose, onSave, players, initial }) {
             <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-2 py-2 text-sm text-gray-200">
               {MODES.map((m) => <option key={m}>{m}</option>)}
             </select>
+            <p className="text-[9px] text-gray-600 mt-1">F9/F8 = 1 pto por gol o asist. · F6/F5 = 0,5 pto.</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -1643,7 +1715,10 @@ function StatLeaderCard({ icon: Icon, label, entry, value, suffix, accent, onOpe
 }
 
 function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
-  const { topScorer, topAssist, mostMVP, mostMatches, highestAvg, bestKeeper, cleanSheetsMap, breakout } = leaders;
+  const {
+    topScorer, topAssist, mostMVP, mostMatches, highestAvg, bestKeeper, cleanSheetsMap, breakout,
+    mostOffensive, bestSingleGoal, bestSingleAssist, bestStreak, mostAchievements,
+  } = leaders;
   const idealTeamDisplay = {
     ARQ: idealTeam.ARQ.map((p) => ({ playerId: p.id, name: p.name, number: p.number, rating: p.avg })),
     DEF: idealTeam.DEF.map((p) => ({ playerId: p.id, name: p.name, number: p.number, rating: p.avg })),
@@ -1658,13 +1733,22 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
       </div>
 
       <div className="flex flex-col gap-2 mb-6">
-        <StatLeaderCard icon={Goal} label="Máximo goleador" entry={topScorer} value={topScorer?.t.goals ?? "—"} suffix="goles" accent="#0D6EFD" onOpen={() => topScorer && onOpenProfile(topScorer.p.id)} />
-        <StatLeaderCard icon={Target} label="Máximo asistidor" entry={topAssist} value={topAssist?.t.assists ?? "—"} suffix="asistencias" accent="#00C853" onOpen={() => topAssist && onOpenProfile(topAssist.p.id)} />
+        <StatLeaderCard icon={Goal} label="Máximo goleador" entry={topScorer} value={topScorer?.t.goals ?? "—"} suffix="goles reales" accent="#0D6EFD" onOpen={() => topScorer && onOpenProfile(topScorer.p.id)} />
+        <StatLeaderCard icon={Target} label="Máximo asistidor" entry={topAssist} value={topAssist?.t.assists ?? "—"} suffix="asistencias reales" accent="#00C853" onOpen={() => topAssist && onOpenProfile(topAssist.p.id)} />
         <StatLeaderCard icon={ShieldCheck} label="Mejor arquero" entry={bestKeeper} value={bestKeeper ? (cleanSheetsMap[bestKeeper.p.id] || 0) : "—"} suffix="vallas invictas" accent="#FFD54F" onOpen={() => bestKeeper && onOpenProfile(bestKeeper.p.id)} />
-        <StatLeaderCard icon={Crown} label="Más MVP" entry={mostMVP} value={mostMVP?.t.votes ?? "—"} suffix="votos figura" accent="#FFD54F" onOpen={() => mostMVP && onOpenProfile(mostMVP.p.id)} />
+        <StatLeaderCard icon={Crown} label="Más MVP" entry={mostMVP} value={mostMVP?.t.votes ?? "—"} suffix={mostMVP ? `votos figura · ${mostMVP.t.mvpPoints} pts` : "votos figura"} accent="#FFD54F" onOpen={() => mostMVP && onOpenProfile(mostMVP.p.id)} />
         <StatLeaderCard icon={CalendarDays} label="Más partidos" entry={mostMatches} value={mostMatches?.t.pj ?? "—"} suffix="PJ" accent="#0D6EFD" onOpen={() => mostMatches && onOpenProfile(mostMatches.p.id)} />
         <StatLeaderCard icon={Star} label="Promedio más alto" entry={highestAvg} value={highestAvg ? (highestAvg.t.score / highestAvg.t.pj).toFixed(1) : "—"} suffix="nota" accent="#00C853" onOpen={() => highestAvg && onOpenProfile(highestAvg.p.id)} />
         <StatLeaderCard icon={Sparkles} label="Jugador revelación" entry={breakout} value={breakout ? (breakout.t.score / breakout.t.pj).toFixed(1) : "—"} suffix="nota inicial" accent="#0D6EFD" onOpen={() => breakout && onOpenProfile(breakout.p.id)} />
+      </div>
+
+      <h3 className="disp text-white text-lg tracking-wide mb-2 flex items-center gap-2">📚 Récords Mercenarios FC</h3>
+      <div className="flex flex-col gap-2 mb-6">
+        <StatLeaderCard icon={Goal} label="Más goles en un partido" entry={bestSingleGoal} value={bestSingleGoal?.value ?? "—"} suffix="goles en una fecha" accent="#EF4444" onOpen={() => bestSingleGoal && onOpenProfile(bestSingleGoal.p.id)} />
+        <StatLeaderCard icon={Target} label="Más asistencias en un partido" entry={bestSingleAssist} value={bestSingleAssist?.value ?? "—"} suffix="asistencias en una fecha" accent="#00C853" onOpen={() => bestSingleAssist && onOpenProfile(bestSingleAssist.p.id)} />
+        <StatLeaderCard icon={Flame} label="Mayor racha goleadora" entry={bestStreak} value={bestStreak?.ach.maxGoalStreak ?? "—"} suffix="partidos seguidos anotando" accent="#FFD54F" onOpen={() => bestStreak && onOpenProfile(bestStreak.p.id)} />
+        <StatLeaderCard icon={Sparkles} label="Mejor participación ofensiva" entry={mostOffensive} value={mostOffensive?.t.offensive ?? "—"} suffix="pts (goles + asist. ponderados)" accent="#0D6EFD" onOpen={() => mostOffensive && onOpenProfile(mostOffensive.p.id)} />
+        <StatLeaderCard icon={Medal} label="Más logros obtenidos" entry={mostAchievements} value={mostAchievements ? mostAchievements.ach.list.filter((i) => i.unlocked).length : "—"} suffix="logros desbloqueados" accent="#FFD54F" onOpen={() => mostAchievements && onOpenProfile(mostAchievements.p.id)} />
       </div>
 
       <h3 className="disp text-white text-lg tracking-wide mb-2 flex items-center gap-2"><Users size={16} style={{ color: "#FFD54F" }} /> Equipo ideal histórico</h3>
@@ -1858,9 +1942,18 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
       </div>
 
       <div className="relative grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t" style={{ borderColor: meta.ring + "33" }}>
-        {[["PJ", t.pj], ["Goles", t.goals], ["Asist.", t.assists], ["MVP", t.votes]].map(([label, val]) => (
+        {[["PJ", t.pj], ["⚽ Goles", t.goals], ["🎯 Asist.", t.assists], ["🗳️ MVP", t.votes]].map(([label, val]) => (
           <div key={label} className="text-center">
             <div className="disp text-white text-sm">{val}</div>
+            <div className="text-[8px] text-gray-500">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="relative grid grid-cols-3 gap-1.5 mt-2 pt-2 border-t" style={{ borderColor: meta.ring + "22" }}>
+        {[["⭐ Gol. pond.", t.goalsW ?? 0], ["⭐ Asist. pond.", t.assistsW ?? 0], ["🔥 Of. total", t.offensive ?? 0]].map(([label, val]) => (
+          <div key={label} className="text-center">
+            <div className="disp text-xs" style={{ color: meta.ring }}>{val}</div>
             <div className="text-[8px] text-gray-500">{label}</div>
           </div>
         ))}
@@ -1874,13 +1967,15 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
   );
 }
 
-function PersonalRecords({ player, matches, votes }) {
-  const { maxGoalsMatch, maxAssistsMatch, maxMvpStreak, bestRating } = computeAchievements(player, matches, votes);
+function PersonalRecords({ player, matches, votes, mvpPoints }) {
+  const { maxGoalsMatch, maxAssistsMatch, maxMvpStreak, maxGoalStreak, bestRating } = computeAchievements(player, matches, votes);
   const rows = [
     { label: "Mejor puntuación en un partido", value: bestRating.toFixed(1), icon: Star, color: "#FFD54F" },
     { label: "Más goles en un partido", value: maxGoalsMatch, icon: Goal, color: "#0D6EFD" },
     { label: "Más asistencias en un partido", value: maxAssistsMatch, icon: Target, color: "#00C853" },
+    { label: "Mayor racha goleadora", value: maxGoalStreak, icon: Flame, color: "#EF4444" },
     { label: "Mayor racha de MVP", value: maxMvpStreak, icon: Crown, color: "#FFD54F" },
+    { label: "Puntos acumulados por votos MVP", value: mvpPoints ?? 0, icon: Sparkles, color: "#0D6EFD" },
   ];
   return (
     <div className="flex flex-col gap-1.5">
@@ -1921,7 +2016,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
   if (!profilePlayer) {
     return <p className="text-sm text-gray-500">Sumá jugadores para ver perfiles.</p>;
   }
-  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0 };
+  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0 };
   const avg = t.pj > 0 ? t.score / t.pj : 0;
   const last5 = history.slice(-5);
   const mvpLeaderId = [...players].map((p) => ({ id: p.id, votes: (totals[p.id] || {}).votes || 0 })).sort((a, b) => b.votes - a.votes)[0]?.id;
@@ -1998,14 +2093,23 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2 mb-4">
-            {[["PJ", t.pj], ["Goles", t.goals], ["Asist.", t.assists], ["Votos MVP", t.votes]].map(([label, val]) => (
+          <div className="grid grid-cols-4 gap-2 mb-2">
+            {[["PJ", t.pj], ["⚽ Goles reales", t.goals], ["🎯 Asist. reales", t.assists], ["🗳️ Votos MVP", t.votes]].map(([label, val]) => (
               <div key={label} className="rounded-xl py-2.5 text-center border border-gray-800" style={{ background: "rgba(255,255,255,0.03)" }}>
                 <div className="disp text-white text-base">{val}</div>
                 <div className="text-[9px] text-gray-500">{label}</div>
               </div>
             ))}
           </div>
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {[["⭐ Goles pond.", t.goalsW ?? 0], ["⭐ Asist. pond.", t.assistsW ?? 0], ["🔥 Particip. ofensiva", t.offensive ?? 0], ["⭐ Pts. MVP", t.mvpPoints ?? 0]].map(([label, val]) => (
+              <div key={label} className="rounded-xl py-2.5 text-center border border-gray-800" style={{ background: "rgba(255,255,255,0.03)" }}>
+                <div className="disp text-base" style={{ color: meta.ring }}>{val}</div>
+                <div className="text-[9px] text-gray-500">{label}</div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-600 -mt-2 mb-4">Ponderación por modalidad: F9/F8 = 1 pto por gol o asistencia · F6/F5 = 0,5 pto. Participación ofensiva = goles ponderados + asistencias ponderadas.</p>
 
           <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Evolución del promedio</h3>
           {history.length < 2 ? (
@@ -2044,7 +2148,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
           <AchievementsGrid player={profilePlayer} matches={matches} votes={votes} />
           <h3 className="disp text-sm text-gray-300 mb-2 mt-5 tracking-wide uppercase">Tus récords personales</h3>
           <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
-            <PersonalRecords player={profilePlayer} matches={matches} votes={votes} />
+            <PersonalRecords player={profilePlayer} matches={matches} votes={votes} mvpPoints={t.mvpPoints} />
           </div>
         </div>
       )}

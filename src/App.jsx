@@ -399,6 +399,173 @@ const CARD_TIERS = {
   especial: { label: "Especial MVP", emoji: "⭐", ring: "#0D6EFD", grad: "linear-gradient(160deg, rgba(13,110,253,0.45), rgba(0,200,83,0.15) 55%, #0a0d11 100%)" },
 };
 
+// ---------- Helpers nuevos v2.0: forma reciente, movimiento en la tabla, jugador del mes ----------
+// Todos son de solo lectura: reutilizan matchRating/computeAchievements existentes y no
+// alteran ningún cálculo de puntaje ni la estructura de datos guardada en Firestore.
+
+function computeRecentForm(playerId, matches, votes, n = 5) {
+  return [...matches]
+    .filter((m) => m.participants.some((p) => p.playerId === playerId))
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .slice(-n)
+    .map((m) => ({ id: m.id, date: m.date, rating: matchRating(m, playerId, votes[m.id])?.rating ?? 0 }));
+}
+
+function computeMatchAvgRating(match, votes) {
+  const mv = votes[match.id];
+  const ratings = match.participants.map((p) => matchRating(match, p.playerId, mv)?.rating).filter((v) => v !== undefined);
+  if (ratings.length === 0) return 0;
+  return ratings.reduce((s, v) => s + v, 0) / ratings.length;
+}
+
+function computeTeamFormDots(matches, votes, n = 5) {
+  return [...matches]
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .slice(-n)
+    .map((m) => ({ id: m.id, date: m.date, avg: computeMatchAvgRating(m, votes) }));
+}
+
+// Jugador del mes: promedio de rendimiento tomando solo los partidos de los últimos `windowDays`
+// días contados desde la fecha más reciente cargada. Usa el mismo matchRating de siempre.
+function computePlayerOfMonth(players, matches, votes, windowDays = 30) {
+  const latest = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  if (!latest) return null;
+  const cutoff = new Date(latest.date + "T00:00:00");
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const recentMatches = matches.filter((m) => new Date(m.date + "T00:00:00") >= cutoff);
+  if (recentMatches.length === 0) return null;
+  const map = {};
+  players.forEach((p) => (map[p.id] = { pj: 0, score: 0 }));
+  recentMatches.forEach((m) => {
+    const mv = votes[m.id];
+    m.participants.forEach((part) => {
+      const r = matchRating(m, part.playerId, mv);
+      if (r && map[part.playerId]) {
+        map[part.playerId].pj += 1;
+        map[part.playerId].score += r.rating;
+      }
+    });
+  });
+  const ranked = players
+    .map((p) => ({ p, pj: map[p.id].pj, avg: map[p.id].pj > 0 ? map[p.id].score / map[p.id].pj : 0 }))
+    .filter((x) => x.pj > 0)
+    .sort((a, b) => b.avg - a.avg || b.pj - a.pj);
+  return ranked[0] || null;
+}
+
+// Movimiento en la tabla: compara la posición en el ranking incluyendo todos los partidos
+// contra la posición que había ANTES de la última fecha cargada (misma fórmula, menos datos).
+function computeRankingMovement(players, matches, votes) {
+  const buildOrder = (matchList) => {
+    const map = {};
+    players.forEach((p) => (map[p.id] = { pj: 0, score: 0 }));
+    matchList.forEach((m) => {
+      const mv = votes[m.id];
+      m.participants.forEach((part) => {
+        const r = matchRating(m, part.playerId, mv);
+        if (r && map[part.playerId]) {
+          map[part.playerId].pj += 1;
+          map[part.playerId].score += r.rating;
+        }
+      });
+    });
+    return players
+      .map((p) => ({ id: p.id, pj: map[p.id].pj, avg: map[p.id].pj > 0 ? map[p.id].score / map[p.id].pj : 0 }))
+      .sort((a, b) => b.avg - a.avg || b.pj - a.pj);
+  };
+  const sortedMatches = [...matches].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const latestDate = sortedMatches.length ? sortedMatches[sortedMatches.length - 1].date : null;
+  const prevMatches = sortedMatches.filter((m) => m.date !== latestDate);
+  const currentOrder = buildOrder(matches);
+  const prevOrder = buildOrder(prevMatches);
+  const movement = {};
+  currentOrder.forEach((row, idx) => {
+    if (row.pj === 0) { movement[row.id] = null; return; }
+    const prevIdx = prevOrder.findIndex((r) => r.id === row.id);
+    const prevRow = prevOrder[prevIdx];
+    if (!prevRow || prevRow.pj === 0) { movement[row.id] = "nuevo"; return; }
+    movement[row.id] = prevIdx - idx; // positivo = subió posiciones, negativo = bajó
+  });
+  return movement;
+}
+
+// Incorporación reciente: su primer partido cargado cae dentro de la ventana de días desde la última fecha.
+function isRecentAddition(playerId, matches, windowDays = 30) {
+  const latest = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  if (!latest) return false;
+  const playerMatches = matches.filter((m) => m.participants.some((p) => p.playerId === playerId));
+  if (playerMatches.length === 0) return false;
+  const first = [...playerMatches].sort((a, b) => new Date(a.date) - new Date(b.date))[0];
+  const cutoff = new Date(latest.date + "T00:00:00");
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  return new Date(first.date + "T00:00:00") >= cutoff;
+}
+
+// Racha goleadora ACTIVA (partidos seguidos anotando hasta hoy, distinto del récord histórico maxGoalStreak).
+function computeActiveGoalStreak(playerId, matches) {
+  const sorted = [...matches]
+    .filter((m) => m.participants.some((p) => p.playerId === playerId))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  let streak = 0;
+  for (const m of sorted) {
+    const part = m.participants.find((p) => p.playerId === playerId);
+    if ((Number(part.goals) || 0) > 0) streak++;
+    else break;
+  }
+  return streak;
+}
+
+// Próximo logro más cerca de desbloquear para un jugador (progreso estimado sobre los logros con umbral numérico).
+function nextAchievementToUnlock(player, matches, votes) {
+  const { list, totalGoals, totalAssists, maxGoalsMatch, cleanSheets } = computeAchievements(player, matches, votes);
+  const THRESH = {
+    hat: { have: maxGoalsMatch, need: 3 },
+    poker: { have: maxGoalsMatch, need: 4 },
+    manita: { have: maxGoalsMatch, need: 5 },
+    depredador: { have: totalGoals, need: 20 },
+    asistHist: { have: totalAssists, need: 10 },
+    def: { have: cleanSheets, need: 2 },
+  };
+  const locked = list.filter((a) => !a.unlocked && !a.comingSoon && THRESH[a.id]);
+  if (locked.length === 0) return null;
+  const withProgress = locked.map((a) => ({ ...a, ...THRESH[a.id] }));
+  withProgress.sort((a, b) => b.have / b.need - a.have / a.need);
+  return withProgress[0];
+}
+
+// ---------- Logo del club (preparado para reemplazo directo) ----------
+// Cuando tengas el archivo del logo, subilo a /public (ej: /public/logo-mercenarios.png)
+// y reemplazá CLUB_LOGO_URL por esa ruta ("/logo-mercenarios.png"). Mientras sea null,
+// se sigue mostrando el ícono de escudo actual — cero cambios visuales hasta que se cargue el logo.
+const CLUB_LOGO_URL = null;
+
+function ClubLogo({ size = 34 }) {
+  if (CLUB_LOGO_URL) {
+    return (
+      <img
+        src={CLUB_LOGO_URL}
+        alt="Mercenarios FC"
+        style={{ width: size, height: size, borderRadius: "9999px", objectFit: "cover" }}
+      />
+    );
+  }
+  return <Shield size={Math.round(size * 0.5)} className="text-blue-400" />;
+}
+
+// ---------- Avatar de jugador (preparado para foto/imagen personalizada) ----------
+// Hoy usa las siluetas por posición. Si en el futuro un jugador tiene `player.avatarUrl`
+// cargado, se muestra esa imagen en el mismo círculo sin tocar el resto del componente.
+function PlayerAvatar({ player, ring, size = 72 }) {
+  if (player?.avatarUrl) {
+    return (
+      <div className="rounded-full overflow-hidden" style={{ width: size, height: size, border: `2px solid ${ring}` }}>
+        <img src={player.avatarUrl} alt={player.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      </div>
+    );
+  }
+  return <PositionAvatar position={player?.position} ring={ring} size={size} />;
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -602,6 +769,14 @@ export default function App() {
 
   const statsLeaders = useMemo(() => computeStatsLeaders(players, totals, matches, votes), [players, totals, matches, votes]);
   const idealTeam = useMemo(() => idealTeamAllTime(ranking), [ranking]);
+  const playerOfMonth = useMemo(() => computePlayerOfMonth(players, matches, votes), [players, matches, votes]);
+  const rankingMovement = useMemo(() => computeRankingMovement(players, matches, votes), [players, matches, votes]);
+  const teamFormDots = useMemo(() => computeTeamFormDots(matches, votes, 5), [matches, votes]);
+  const seasonTotals = useMemo(() => {
+    const totalGoals = matches.reduce((s, m) => s + m.participants.reduce((s2, p) => s2 + (Number(p.goals) || 0), 0), 0);
+    const activePlayers = players.filter((p) => (totals[p.id]?.pj || 0) > 0).length;
+    return { totalGoals, activePlayers, totalMatches: matches.length };
+  }, [matches, players, totals]);
   const overallAvg = useMemo(() => {
     const withPj = ranking.filter((p) => p.pj > 0);
     if (withPj.length === 0) return 0;
@@ -722,7 +897,7 @@ export default function App() {
               className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
               style={{ background: "linear-gradient(145deg,#12161d,#05070a)", border: "1.5px solid #0D6EFD" }}
             >
-              <Shield size={17} className="text-blue-400" />
+              <ClubLogo size={19} />
             </div>
             <div>
               <div className="disp text-base tracking-wide text-white leading-tight">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></div>
@@ -765,14 +940,28 @@ export default function App() {
           <HomeTab
             players={players}
             matches={matches}
+            votes={votes}
             overallAvg={overallAvg}
             season={seasonLabel(matches)}
+            ranking={ranking}
+            playerOfMonth={playerOfMonth}
+            teamFormDots={teamFormDots}
+            seasonTotals={seasonTotals}
+            currentPlayer={currentPlayer}
             onGoRanking={() => setTab("ranking")}
             onGoPartidos={() => setTab("partidos")}
+            onOpenProfile={(id) => { setProfileId(id); setTab("perfil"); }}
           />
         )}
         {tab === "ranking" && (
-          <RankingTab ranking={ranking} onOpenProfile={(id) => { setProfileId(id); setTab("perfil"); }} />
+          <RankingTab
+            ranking={ranking}
+            leaders={statsLeaders}
+            matches={matches}
+            votes={votes}
+            movement={rankingMovement}
+            onOpenProfile={(id) => { setProfileId(id); setTab("perfil"); }}
+          />
         )}
         {tab === "partidos" && (
           <PartidosTab
@@ -801,6 +990,8 @@ export default function App() {
           <JugadoresTab
             players={players}
             totals={totals}
+            matches={matches}
+            votes={votes}
             isAdmin={isAdmin}
             onAdd={() => setShowAddPlayer(true)}
             onOpen={(id) => { setProfileId(id); setTab("perfil"); }}
@@ -992,8 +1183,36 @@ function LoginModal({ onClose, onLogin, error }) {
   );
 }
 
-function HomeTab({ players, matches, overallAvg, season, onGoRanking, onGoPartidos }) {
+function HomeTab({
+  players, matches, votes, overallAvg, season, ranking, playerOfMonth, teamFormDots, seasonTotals,
+  currentPlayer, onGoRanking, onGoPartidos, onOpenProfile,
+}) {
   const lastMatch = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  const lastMatchMvp = useMemo(() => {
+    if (!lastMatch) return null;
+    const mv = votes[lastMatch.id] || {};
+    const counts = {};
+    Object.values(mv).forEach((v) => (counts[v] = (counts[v] || 0) + 1));
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    if (!top) return null;
+    const pl = players.find((p) => p.id === top[0]);
+    return pl ? { player: pl, votes: top[1] } : null;
+  }, [lastMatch, votes, players]);
+  const podium3 = ranking.slice(0, 3);
+  const highlight = useMemo(() => {
+    if (currentPlayer) {
+      const next = nextAchievementToUnlock(currentPlayer, matches, votes);
+      if (next) return { kind: "logro", player: currentPlayer, achievement: next };
+    }
+    // Sin usuario elegido (o sin logros pendientes): destacamos la racha goleadora activa más larga del plantel.
+    const streaks = players
+      .map((p) => ({ p, streak: computeActiveGoalStreak(p.id, matches) }))
+      .filter((x) => x.streak >= 2)
+      .sort((a, b) => b.streak - a.streak);
+    if (streaks[0]) return { kind: "racha", player: streaks[0].p, streak: streaks[0].streak };
+    return null;
+  }, [currentPlayer, players, matches, votes]);
+
   return (
     <div>
       <div
@@ -1017,7 +1236,7 @@ function HomeTab({ players, matches, overallAvg, season, onGoRanking, onGoPartid
               animation: "pulse-glow 3s ease-in-out infinite",
             }}
           >
-            <Shield size={34} className="text-blue-400" />
+            <ClubLogo size={40} />
           </div>
           <h1 className="disp text-3xl text-white tracking-wide leading-none">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></h1>
           <span className="mt-2 text-[11px] tracking-[0.2em] text-gray-400 disp uppercase px-3 py-1 rounded-full border border-gray-700 bg-black/30">{season}</span>
@@ -1034,6 +1253,13 @@ function HomeTab({ players, matches, overallAvg, season, onGoRanking, onGoPartid
               </div>
             ))}
           </div>
+
+          {seasonTotals && (
+            <div className="flex items-center gap-4 mt-3 text-[10px] text-gray-500">
+              <span className="flex items-center gap-1"><Goal size={11} style={{ color: "#0D6EFD" }} /> {seasonTotals.totalGoals} goles en la temporada</span>
+              <span className="flex items-center gap-1"><Users size={11} style={{ color: "#00C853" }} /> {seasonTotals.activePlayers} jugadores activos</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1058,8 +1284,50 @@ function HomeTab({ players, matches, overallAvg, season, onGoRanking, onGoPartid
         </button>
       </div>
 
+      {playerOfMonth && (
+        <button
+          onClick={() => onOpenProfile(playerOfMonth.p.id)}
+          className="w-full text-left rounded-2xl p-4 mb-5 border flex items-center gap-3 transition-transform active:scale-95 hover:-translate-y-0.5"
+          style={{ background: "linear-gradient(135deg, rgba(255,213,79,0.16), rgba(255,213,79,0.02))", borderColor: "#FFD54F55" }}
+        >
+          <div className="rounded-full p-2.5 shrink-0" style={{ background: "#FFD54F22" }}>
+            <Crown size={20} style={{ color: "#FFD54F" }} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider">Jugador del mes</div>
+            <div className="disp text-white text-sm truncate">{playerOfMonth.p.name}</div>
+            <div className="text-[10px] text-gray-500">{playerOfMonth.pj} partidos en los últimos 30 días</div>
+          </div>
+          <div className="disp text-xl shrink-0" style={{ color: "#FFD54F" }}>{playerOfMonth.avg.toFixed(1)}</div>
+        </button>
+      )}
+
+      {podium3.length > 0 && (
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="disp text-sm text-gray-300 tracking-wide uppercase">Top 3 del ranking</h3>
+            <button onClick={onGoRanking} className="text-[10px] flex items-center gap-0.5" style={{ color: "#0D6EFD" }}>Ver todo <ChevronRight size={12} /></button>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {podium3.map((p, i) => (
+              <button
+                key={p.id}
+                onClick={() => onOpenProfile(p.id)}
+                className="rounded-2xl p-2.5 border flex flex-col items-center text-center transition-transform active:scale-95"
+                style={{ background: "rgba(255,255,255,0.03)", borderColor: "#1f2937" }}
+              >
+                <span className="text-sm">{["🥇", "🥈", "🥉"][i]}</span>
+                <span className="jersey mt-1" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
+                <span className="text-[10px] text-white truncate w-full mt-1 disp">{p.name.split(" ")[0]}</span>
+                <span className="disp text-xs font-bold rounded-md px-1.5 mt-1" style={{ color: "#0b0b0b", background: ratingColor(p.avg) }}>{p.pj > 0 ? p.avg.toFixed(1) : "—"}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {lastMatch && (
-        <div>
+        <div className="mb-5">
           <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Última fecha</h3>
           <div className="rounded-2xl p-4 border border-gray-800" style={{ background: "rgba(255,255,255,0.03)" }}>
             <div className="flex items-center justify-between text-[11px] text-gray-500 mb-2">
@@ -1071,7 +1339,66 @@ function HomeTab({ players, matches, overallAvg, season, onGoRanking, onGoPartid
               <span style={{ color: "#0D6EFD" }}>{teamGoalsFor(lastMatch, "A")} - {teamGoalsFor(lastMatch, "B")}</span>
               <span className="text-sm text-gray-300 truncate max-w-[35%]">{lastMatch.teamBName}</span>
             </div>
+            {lastMatchMvp && (
+              <div className="flex items-center justify-center gap-1.5 mt-3 pt-3 border-t border-gray-900 text-xs">
+                <Crown size={13} style={{ color: "#FFD54F" }} />
+                <span className="text-gray-400">Figura: <span style={{ color: "#FFD54F" }} className="disp">{lastMatchMvp.player.name}</span></span>
+              </div>
+            )}
           </div>
+        </div>
+      )}
+
+      {teamFormDots && teamFormDots.length > 1 && (
+        <div className="mb-5">
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Forma reciente del plantel</h3>
+          <div className="rounded-2xl p-4 border border-gray-800 flex items-center justify-between gap-2" style={{ background: "rgba(255,255,255,0.03)" }}>
+            {teamFormDots.map((d) => (
+              <div key={d.id} className="flex flex-col items-center gap-1 flex-1">
+                <div className="w-full h-2 rounded-full" style={{ background: ratingColor(d.avg) }} />
+                <span className="text-[8px] text-gray-600">{new Date(d.date + "T00:00:00").toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {highlight && (
+        <div>
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Dato de la semana</h3>
+          {highlight.kind === "logro" ? (
+            <button
+              onClick={() => onOpenProfile(highlight.player.id)}
+              className="w-full text-left rounded-2xl p-4 border flex items-center gap-3 transition-transform active:scale-95"
+              style={{ background: "rgba(13,110,253,0.08)", borderColor: "#0D6EFD40" }}
+            >
+              <div className="rounded-full p-2.5 shrink-0" style={{ background: "#0D6EFD22" }}>
+                <highlight.achievement.icon size={18} style={{ color: highlight.achievement.color }} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-gray-400">A un paso de un logro:</div>
+                <div className="disp text-white text-sm truncate">{highlight.achievement.label}</div>
+                <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden mt-1.5">
+                  <div className="h-full rounded-full" style={{ width: Math.min(100, (highlight.achievement.have / highlight.achievement.need) * 100) + "%", background: highlight.achievement.color }} />
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500 shrink-0">{highlight.achievement.have}/{highlight.achievement.need}</div>
+            </button>
+          ) : (
+            <button
+              onClick={() => onOpenProfile(highlight.player.id)}
+              className="w-full text-left rounded-2xl p-4 border flex items-center gap-3 transition-transform active:scale-95"
+              style={{ background: "rgba(239,68,68,0.08)", borderColor: "#EF444440" }}
+            >
+              <div className="rounded-full p-2.5 shrink-0" style={{ background: "#EF444422" }}>
+                <Flame size={18} style={{ color: "#EF4444" }} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-gray-400">Racha goleadora activa</div>
+                <div className="disp text-white text-sm truncate">{highlight.player.name} lleva {highlight.streak} fechas seguidas anotando</div>
+              </div>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1123,18 +1450,96 @@ function PodiumCard({ player, tier, onOpen }) {
   );
 }
 
-function RankingTab({ ranking, onOpenProfile }) {
-  const podium = ranking.slice(0, 3);
-  const rest = ranking.slice(3);
+function MovementBadge({ value }) {
+  if (value === null || value === undefined) return <span className="text-[9px] text-gray-700">—</span>;
+  if (value === "nuevo") return <span className="text-[8px] text-blue-400 disp uppercase tracking-wide">Nuevo</span>;
+  if (value > 0) return <span className="text-[10px] flex items-center gap-0.5" style={{ color: "#00C853" }}><TrendingUp size={11} /> {value}</span>;
+  if (value < 0) return <span className="text-[10px] flex items-center gap-0.5" style={{ color: "#EF4444" }}><TrendingDown size={11} /> {Math.abs(value)}</span>;
+  return <span className="text-[10px] flex items-center gap-0.5 text-gray-500"><Minus size={11} /></span>;
+}
+
+function FormDots({ form, size = 6 }) {
+  if (!form || form.length === 0) return <span className="text-[9px] text-gray-700">—</span>;
+  return (
+    <div className="flex items-center gap-0.5">
+      {form.map((f, i) => (
+        <span key={f.id || i} className="rounded-full" style={{ width: size, height: size, background: ratingColor(f.rating) }} title={f.rating.toFixed(1)} />
+      ))}
+    </div>
+  );
+}
+
+const RANKING_QUICK_TABS = [
+  ["general", "General"],
+  ["goleadores", "Goleadores"],
+  ["asistidores", "Asistidores"],
+  ["vallas", "Vallas invictas"],
+];
+
+function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile }) {
+  const [quickTab, setQuickTab] = useState("general");
+  const [posFilter, setPosFilter] = useState("ALL");
+
+  const filtered = useMemo(
+    () => (posFilter === "ALL" ? ranking : ranking.filter((p) => p.position === posFilter)),
+    [ranking, posFilter]
+  );
+
+  const sortedList = useMemo(() => {
+    const withPj = filtered.filter((p) => p.pj > 0);
+    if (quickTab === "goleadores") return [...withPj].sort((a, b) => b.goals - a.goals);
+    if (quickTab === "asistidores") return [...withPj].sort((a, b) => b.assists - a.assists);
+    if (quickTab === "vallas")
+      return [...withPj]
+        .filter((p) => p.position === "ARQ" || p.position === "DEF")
+        .sort((a, b) => (leaders.cleanSheetsMap[b.id] || 0) - (leaders.cleanSheetsMap[a.id] || 0));
+    return filtered; // general: ya viene ordenado por promedio
+  }, [filtered, quickTab, leaders]);
+
+  const podium = quickTab === "general" && posFilter === "ALL" ? ranking.slice(0, 3) : [];
+  const rest = quickTab === "general" ? filtered.slice(posFilter === "ALL" ? 3 : 0) : sortedList;
+
+  const valueFor = (p) => {
+    if (quickTab === "goleadores") return p.goals;
+    if (quickTab === "asistidores") return p.assists;
+    if (quickTab === "vallas") return leaders.cleanSheetsMap[p.id] || 0;
+    return p.pj > 0 ? p.avg.toFixed(1) : "—";
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
         <h2 className="disp text-white text-2xl tracking-wide">Tabla individual</h2>
         <Trophy size={20} style={{ color: "#FFD54F" }} />
       </div>
-      <p className="text-[11px] text-gray-500 mb-4 leading-snug">
+      <p className="text-[11px] text-gray-500 mb-3 leading-snug">
         Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio de notas</span>.
       </p>
+
+      <div className="flex gap-1.5 mb-2 overflow-x-auto">
+        {RANKING_QUICK_TABS.map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setQuickTab(key)}
+            className="text-xs px-3 py-1.5 rounded-full border shrink-0 disp"
+            style={quickTab === key ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-1.5 mb-4 overflow-x-auto">
+        {[["ALL", "Todas"], ...POSITIONS.map((p) => [p.id, p.label])].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setPosFilter(key)}
+            className="text-[11px] px-2.5 py-1 rounded-full border shrink-0"
+            style={posFilter === key ? { background: "rgba(13,110,253,0.18)", borderColor: "#0D6EFD", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {podium.length > 0 && (
         <div className="grid grid-cols-3 gap-2 mb-5 items-end">
@@ -1151,28 +1556,32 @@ function RankingTab({ ranking, onOpenProfile }) {
       <div className="rounded-2xl border border-gray-800 overflow-hidden" style={{ background: "rgba(255,255,255,0.02)" }}>
         <div className="grid grid-cols-12 text-[10px] text-gray-500 px-3 py-2 bg-gray-900/70 disp tracking-wider uppercase">
           <div className="col-span-1">#</div>
-          <div className="col-span-5">Jugador</div>
-          <div className="col-span-2 text-center">PJ</div>
-          <div className="col-span-2 text-center">G/A</div>
-          <div className="col-span-2 text-right">Nota</div>
+          <div className="col-span-4">Jugador</div>
+          <div className="col-span-2 text-center">Forma</div>
+          <div className="col-span-2 text-center">Mov.</div>
+          <div className="col-span-3 text-right">{quickTab === "general" ? "Nota" : quickTab === "vallas" ? "Vallas" : quickTab === "goleadores" ? "Goles" : "Asist."}</div>
         </div>
-        {ranking.length === 0 && <div className="p-4 text-sm text-gray-500">Todavía no hay jugadores.</div>}
+        {rest.length === 0 && <div className="p-4 text-sm text-gray-500">No hay jugadores para este filtro todavía.</div>}
         {rest.map((p, i) => (
           <button
             key={p.id}
             onClick={() => onOpenProfile(p.id)}
             className="w-full grid grid-cols-12 items-center px-3 py-2.5 border-t border-gray-900 hover:bg-white/[0.03] text-left transition-colors"
           >
-            <div className="col-span-1 disp font-semibold text-gray-500">{i + 4}</div>
-            <div className="col-span-5 flex items-center gap-2 min-w-0">
+            <div className="col-span-1 disp font-semibold text-gray-500">{quickTab === "general" && posFilter === "ALL" ? i + 4 : i + 1}</div>
+            <div className="col-span-4 flex items-center gap-2 min-w-0">
               <span className="jersey" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
               <span className="text-sm text-gray-200 truncate">{p.name}</span>
             </div>
-            <div className="col-span-2 text-center text-xs text-gray-400">{p.pj}</div>
-            <div className="col-span-2 text-center text-xs text-gray-400">{p.goals}/{p.assists}</div>
-            <div className="col-span-2 flex justify-end">
-              <span className="disp text-xs font-bold rounded-md px-1.5 py-0.5" style={{ color: "#0b0b0b", background: ratingColor(p.avg) }}>
-                {p.pj > 0 ? p.avg.toFixed(1) : "—"}
+            <div className="col-span-2 flex justify-center">
+              <FormDots form={computeRecentForm(p.id, matches, votes, 4)} />
+            </div>
+            <div className="col-span-2 flex justify-center">
+              <MovementBadge value={movement ? movement[p.id] : null} />
+            </div>
+            <div className="col-span-3 flex justify-end">
+              <span className="disp text-xs font-bold rounded-md px-1.5 py-0.5" style={{ color: "#0b0b0b", background: quickTab === "general" ? ratingColor(p.avg) : "#0D6EFD" }}>
+                {valueFor(p)}
               </span>
             </div>
           </button>
@@ -1182,7 +1591,101 @@ function RankingTab({ ranking, onOpenProfile }) {
   );
 }
 
-function JugadoresTab({ players, totals, isAdmin, onAdd, onOpen, onEdit, onDelete }) {
+const PLAYER_SORTS = [
+  ["nota", "Nota"],
+  ["pj", "Partidos"],
+  ["nombre", "Nombre"],
+];
+const LINE_GROUPS = [
+  ["ARQ", "Arqueros"],
+  ["DEF", "Defensores"],
+  ["MED", "Mediocampistas"],
+  ["DEL", "Delanteros"],
+];
+
+function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen, onEdit, onDelete }) {
+  const meta = CARD_TIERS[tier];
+  return (
+    <div
+      className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-blue-700/60 transition-colors"
+      style={{ background: "rgba(255,255,255,0.02)" }}
+    >
+      <button onClick={onOpen} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+        <span className="jersey shrink-0">{p.number}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-sm text-gray-200 truncate">{p.name}</span>
+            {isNew && <span className="text-[8px] shrink-0 px-1.5 py-0.5 rounded-full disp uppercase tracking-wide" style={{ background: "#00C85322", color: "#00C853" }}>Nuevo</span>}
+            {streak >= 2 && <span className="text-[8px] shrink-0 px-1.5 py-0.5 rounded-full disp uppercase tracking-wide flex items-center gap-0.5" style={{ background: "#EF444422", color: "#EF4444" }}><Flame size={9} /> Racha</span>}
+          </div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-[11px] text-gray-500">{posLabel(p.position)}</span>
+            {t?.pj > 0 && (
+              <span className="text-[9px] px-1.5 rounded-full disp" style={{ color: meta.ring, background: meta.ring + "18" }}>{meta.emoji} {meta.label}</span>
+            )}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="disp text-sm font-bold rounded-md px-1.5" style={{ color: t?.pj ? "#0b0b0b" : "#6b7280", background: t?.pj ? ratingColor(avg) : "transparent" }}>
+            {t?.pj ? avg.toFixed(1) : "—"}
+          </div>
+          <div className="text-[10px] text-gray-500 mt-0.5">{t?.pj ?? 0} PJ · {t?.goals ?? 0}G {t?.assists ?? 0}A</div>
+          {t?.pj > 0 && trend.status !== "sin-datos" && (
+            <div className="text-[9px] mt-0.5" style={{ color: TREND_META[trend.status].color }}>{TREND_META[trend.status].emoji} {TREND_META[trend.status].label}</div>
+          )}
+        </div>
+      </button>
+      {isAdmin ? (
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={onEdit} className="p-1.5 text-gray-500 hover:text-blue-400"><Pencil size={14} /></button>
+          <button onClick={onDelete} className="p-1.5 text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
+        </div>
+      ) : (
+        <ChevronRight size={16} className="text-gray-600 shrink-0" />
+      )}
+    </div>
+  );
+}
+
+function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen, onEdit, onDelete }) {
+  const [search, setSearch] = useState("");
+  const [posFilter, setPosFilter] = useState("ALL");
+  const [sortBy, setSortBy] = useState("nota");
+
+  const mvpLeaderId = useMemo(
+    () => [...players].map((p) => ({ id: p.id, votes: (totals[p.id] || {}).votes || 0 })).sort((a, b) => b.votes - a.votes)[0]?.id,
+    [players, totals]
+  );
+
+  const enriched = useMemo(() => {
+    return players.map((p) => {
+      const t = totals[p.id];
+      const avg = t?.pj ? t.score / t.pj : 0;
+      return {
+        p, t, avg,
+        tier: tierFromAvg(avg, t?.pj || 0, p.id === mvpLeaderId),
+        trend: computeTrend(p, matches, votes),
+        isNew: isRecentAddition(p.id, matches),
+        streak: computeActiveGoalStreak(p.id, matches),
+      };
+    });
+  }, [players, totals, matches, votes, mvpLeaderId]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return enriched.filter((x) => (posFilter === "ALL" || x.p.position === posFilter) && (!q || x.p.name.toLowerCase().includes(q)));
+  }, [enriched, search, posFilter]);
+
+  const sorter = (a, b) => {
+    if (sortBy === "pj") return (b.t?.pj || 0) - (a.t?.pj || 0);
+    if (sortBy === "nombre") return a.p.name.localeCompare(b.p.name, "es");
+    return b.avg - a.avg || (b.t?.pj || 0) - (a.t?.pj || 0);
+  };
+
+  const groups = posFilter === "ALL"
+    ? LINE_GROUPS.map(([id, label]) => [id, label, filtered.filter((x) => x.p.position === id).sort(sorter)])
+    : [[posFilter, posLabel(posFilter), [...filtered].sort(sorter)]];
+
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
@@ -1197,42 +1700,64 @@ function JugadoresTab({ players, totals, isAdmin, onAdd, onOpen, onEdit, onDelet
           </button>
         )}
       </div>
-      <div className="grid grid-cols-1 gap-2">
-        {players.length === 0 && <p className="text-sm text-gray-500">Todavía no hay jugadores cargados.</p>}
-        {players.map((p) => {
-          const t = totals[p.id];
-          const avg = t?.pj ? t.score / t.pj : 0;
-          return (
-            <div
-              key={p.id}
-              className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-blue-700/60 transition-colors"
-              style={{ background: "rgba(255,255,255,0.02)" }}
-            >
-              <button onClick={() => onOpen(p.id)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-                <span className="jersey">{p.number}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-gray-200 truncate">{p.name}</div>
-                  <div className="text-[11px] text-gray-500">{posLabel(p.position)}</div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="disp text-sm font-bold rounded-md px-1.5" style={{ color: t?.pj ? "#0b0b0b" : "#6b7280", background: t?.pj ? ratingColor(avg) : "transparent" }}>
-                    {t?.pj ? avg.toFixed(1) : "—"}
-                  </div>
-                  <div className="text-[10px] text-gray-500 mt-0.5">{t?.pj ?? 0} PJ</div>
-                </div>
-              </button>
-              {isAdmin ? (
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => onEdit(p.id)} className="p-1.5 text-gray-500 hover:text-blue-400"><Pencil size={14} /></button>
-                  <button onClick={() => onDelete(p.id)} className="p-1.5 text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
-                </div>
-              ) : (
-                <ChevronRight size={16} className="text-gray-600 shrink-0" />
-              )}
-            </div>
-          );
-        })}
+
+      <div className="flex items-center gap-2 mb-2.5">
+        <div className="flex-1 flex items-center gap-2 rounded-xl border border-gray-800 px-3 py-2" style={{ background: "rgba(255,255,255,0.03)" }}>
+          <Users size={14} className="text-gray-600 shrink-0" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar jugador..."
+            className="bg-transparent text-sm text-gray-200 outline-none w-full placeholder:text-gray-600"
+          />
+          {search && <button onClick={() => setSearch("")}><X size={13} className="text-gray-600" /></button>}
+        </div>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="text-xs bg-gray-900/70 border border-gray-800 rounded-xl px-2 py-2 text-gray-300 shrink-0"
+        >
+          {PLAYER_SORTS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
       </div>
+
+      <div className="flex gap-1.5 mb-4 overflow-x-auto">
+        {[["ALL", "Todas"], ...POSITIONS.map((p) => [p.id, p.label])].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setPosFilter(key)}
+            className="text-[11px] px-2.5 py-1 rounded-full border shrink-0"
+            style={posFilter === key ? { background: "rgba(13,110,253,0.18)", borderColor: "#0D6EFD", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {players.length === 0 && <p className="text-sm text-gray-500">Todavía no hay jugadores cargados.</p>}
+      {players.length > 0 && filtered.length === 0 && <p className="text-sm text-gray-500">No encontramos jugadores con ese filtro.</p>}
+
+      {groups.map(([id, label, list]) =>
+        list.length === 0 ? null : (
+          <div key={id} className="mb-4">
+            {posFilter === "ALL" && (
+              <h3 className="disp text-[11px] text-gray-500 mb-2 tracking-widest uppercase">{label} <span className="text-gray-700">({list.length})</span></h3>
+            )}
+            <div className="grid grid-cols-1 gap-2">
+              {list.map((x) => (
+                <PlayerListCard
+                  key={x.p.id}
+                  p={x.p} t={x.t} avg={x.avg} tier={x.tier} trend={x.trend} isNew={x.isNew} streak={x.streak}
+                  isAdmin={isAdmin}
+                  onOpen={() => onOpen(x.p.id)}
+                  onEdit={() => onEdit(x.p.id)}
+                  onDelete={() => onDelete(x.p.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -1923,7 +2448,7 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
 
       <div className="relative flex flex-col items-center mt-1">
         <div className="relative">
-          <PositionAvatar position={player.position} ring={meta.ring} size={78} />
+          <PlayerAvatar player={player} ring={meta.ring} size={78} />
           <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 26, height: 26, fontSize: 11, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{player.number}</span>
         </div>
         <div className="disp text-white text-base mt-2">{player.name}</div>
@@ -2072,7 +2597,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
                 <div className="text-[9px] text-gray-400 uppercase tracking-wider">Promedio de rendimiento</div>
               </div>
               <div className="relative">
-                <PositionAvatar position={profilePlayer.position} ring={meta.ring} size={56} />
+                <PlayerAvatar player={profilePlayer} ring={meta.ring} size={56} />
                 <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 20, height: 20, fontSize: 9, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{profilePlayer.number}</span>
               </div>
             </div>

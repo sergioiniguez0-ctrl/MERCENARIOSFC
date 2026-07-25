@@ -27,6 +27,48 @@ const MODE_POINT_VALUE = {
 function modePointValue(mode) {
   return MODE_POINT_VALUE[mode] ?? 1;
 }
+
+// ---------- Modalidades oficiales vs. modalidades de ranking (regla del club) ----------
+// F8 y F9 son las ÚNICAS modalidades que generan estadísticas oficiales: partidos jugados,
+// goles, asistencias, MVP, promedio, logros, récords, cartas y estadísticas históricas.
+// F5 y F6 NO generan estadísticas oficiales: no suman goles, asistencias, MVP, promedio,
+// récords ni logros. Solo cuentan presencia y dan un pequeño aporte al Ranking (ver
+// F56_* más abajo). Esta separación se aplica en TODAS las funciones de cálculo del
+// archivo: cada una que agrega datos "oficiales" filtra primero por isOfficialMode().
+const OFFICIAL_MODES = ["Fútbol 8", "Fútbol 9"];
+const RANKING_ONLY_MODES = ["Fútbol 5", "Fútbol 6"];
+function isOfficialMode(mode) {
+  return OFFICIAL_MODES.includes(mode);
+}
+function isRankingOnlyMode(mode) {
+  return RANKING_ONLY_MODES.includes(mode);
+}
+function onlyOfficialMatches(matches) {
+  return (matches || []).filter((m) => isOfficialMode(m.mode));
+}
+
+// Aporte de F5/F6 al Ranking general: NO son estadísticas oficiales, son solo puntos
+// chicos de ranking. Por partido, un jugador puede sumar como máximo 0,3:
+//  +0,1 por presencia (jugar el partido)
+//  +0,1 si su equipo ganó
+//  +0,1 si fue el goleador del partido (máximo goleador; empatados suman todos)
+const F56_PRESENCE_INC = 0.1;
+const F56_WIN_INC = 0.1;
+const F56_SCORER_INC = 0.1;
+const F56_MATCH_CAP = 0.3;
+
+// Jugadores que nunca pueden eliminarse del plantel (regla fija del club).
+// "Cristian 8" era un jugador placeholder de la seed y ya se eliminó del sistema:
+// NO está protegido. Solo el jugador real "Cris 8" no se puede borrar.
+// Se compara por nombre normalizado para cubrir variantes de escritura.
+const PROTECTED_PLAYER_NAMES = ["cris 8"];
+function normalizedPlayerName(name) {
+  return (name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+function isProtectedPlayer(player) {
+  if (!player) return false;
+  return PROTECTED_PLAYER_NAMES.includes(normalizedPlayerName(player.name));
+}
 // 1 voto MVP recibido = 0,1 puntos acumulados históricamente.
 const MVP_VOTE_POINT = 0.1;
 const MAX_PLAYERS = 30;
@@ -71,7 +113,6 @@ const SEED_PLAYERS = [
   { number: 6, name: "Bruno", position: "DEL" },
   { number: 7, name: "Sergio", position: "DEF" },
   { number: 8, name: "Teddy", position: "DEL" },
-  { number: 9, name: "Cristian 8", position: "MED" },
   { number: 10, name: "Chuwa", position: "DEF" },
   { number: 11, name: "Galo", position: "MED" },
   { number: 12, name: "Nacho", position: "MED" },
@@ -99,7 +140,6 @@ const SEED_MATCHES = [
       { playerId: "p18", position: "MED", team: "A", goals: 0, assists: 0, yellow: false, red: false },
       { playerId: "p3", position: "DEF", team: "A", goals: 0, assists: 0, yellow: false, red: false },
       { playerId: "p15", position: "DEL", team: "A", goals: 3, assists: 1, yellow: false, red: false },
-      { playerId: "p9", position: "ARQ", team: "A", goals: 0, assists: 0, yellow: false, red: false },
       { playerId: "p7", position: "DEF", team: "B", goals: 0, assists: 2, yellow: false, red: false },
       { playerId: "p11", position: "MED", team: "B", goals: 0, assists: 1, yellow: false, red: false },
       { playerId: "p8", position: "DEL", team: "B", goals: 3, assists: 2, yellow: false, red: false },
@@ -115,7 +155,6 @@ const SEED_MATCHES = [
       { label: "Mejor pase", playerId: "p5" },
       { label: "Mejor gambeta", playerId: "p13" },
       { label: "Mejor defensa", playerId: "p3" },
-      { label: "Mejor arquero", playerId: "p9" },
       { label: "Mejor pase", playerId: "p7" },
       { label: "Mejor gambeta", playerId: "p11" },
       { label: "Mejor defensa", playerId: "p2" },
@@ -138,6 +177,31 @@ function teamGoalsFor(match, team) {
   const own = match.participants.filter((x) => x.team === team).reduce((s, x) => s + (Number(x.goals) || 0), 0);
   const rivalOwnGoals = match.participants.filter((x) => x.team !== team).reduce((s, x) => s + (Number(x.ownGoals) || 0), 0);
   return own + rivalOwnGoals;
+}
+
+// Aporte de Ranking de partidos F5/F6 (NO son estadísticas oficiales).
+// Devuelve un mapa playerId -> { presencias, bonus } acumulado SOLO con partidos F5/F6.
+function computeF56Bonus(players, matches) {
+  const map = {};
+  players.forEach((p) => (map[p.id] = { presencias: 0, bonus: 0 }));
+  (matches || [])
+    .filter((m) => isRankingOnlyMode(m.mode))
+    .forEach((m) => {
+      const teamAGoals = teamGoalsFor(m, "A");
+      const teamBGoals = teamGoalsFor(m, "B");
+      const winner = teamAGoals > teamBGoals ? "A" : teamBGoals > teamAGoals ? "B" : null;
+      const maxGoals = Math.max(0, ...m.participants.map((p) => Number(p.goals) || 0));
+      m.participants.forEach((part) => {
+        if (!map[part.playerId]) return;
+        let inc = F56_PRESENCE_INC;
+        if (winner && part.team === winner) inc += F56_WIN_INC;
+        if (maxGoals > 0 && (Number(part.goals) || 0) === maxGoals) inc += F56_SCORER_INC;
+        inc = Math.min(inc, F56_MATCH_CAP);
+        map[part.playerId].presencias += 1;
+        map[part.playerId].bonus = Math.round((map[part.playerId].bonus + inc) * 100) / 100;
+      });
+    });
+  return map;
 }
 
 function matchRating(match, playerId, mvpVotes) {
@@ -209,8 +273,11 @@ function seasonLabel(matches) {
 }
 
 function computeStatsLeaders(players, totals, matches, votes) {
+  // Goleadores, asistidores, MVP, vallas invictas, récords y logros son SIEMPRE
+  // estadísticas oficiales: se calculan únicamente con partidos F8/F9.
+  matches = onlyOfficialMatches(matches);
   const withPj = players
-    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0 } }))
+    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0 } }))
     .filter((x) => x.t.pj > 0);
 
   const topScorer = [...withPj].sort((a, b) => b.t.goals - a.t.goals)[0];
@@ -278,6 +345,8 @@ function idealTeamAllTime(ranking) {
 // número que ya ordena el Ranking. No existe una fórmula paralela.
 
 function computeAchievements(player, matches, votes) {
+  // Los logros se calculan únicamente con partidos oficiales (F8/F9).
+  matches = onlyOfficialMatches(matches);
   let maxGoalsMatch = 0, maxAssistsMatch = 0, mvpCount = 0, mvpStreak = 0, maxMvpStreak = 0, cleanSheets = 0, prevMvp = false, bestRating = 0;
   let goalStreak = 0, maxGoalStreak = 0, hasPerfectMatch = false;
   [...matches].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach((m) => {
@@ -361,6 +430,9 @@ function computeLevel(t, matches, player, achievementsUnlockedCount) {
 
 // Tendencia: forma reciente (últimos partidos) contra el historial previo del mismo jugador.
 function computeTrend(player, matches, votes) {
+  // La tendencia se basa en la nota por partido (matchRating), que depende de goles/
+  // asistencias/etc. Solo partidos oficiales (F8/F9) para no mezclar modalidades.
+  matches = onlyOfficialMatches(matches);
   const ratings = matches
     .filter((m) => m.participants.some((p) => p.playerId === player.id))
     .sort((a, b) => new Date(a.date) - new Date(b.date))
@@ -404,6 +476,8 @@ const CARD_TIERS = {
 // alteran ningún cálculo de puntaje ni la estructura de datos guardada en Firestore.
 
 function computeRecentForm(playerId, matches, votes, n = 5) {
+  // Forma reciente = notas de partidos oficiales (F8/F9) únicamente.
+  matches = onlyOfficialMatches(matches);
   return [...matches]
     .filter((m) => m.participants.some((p) => p.playerId === playerId))
     .sort((a, b) => new Date(a.date) - new Date(b.date))
@@ -419,6 +493,8 @@ function computeMatchAvgRating(match, votes) {
 }
 
 function computeTeamFormDots(matches, votes, n = 5) {
+  // La forma del equipo se basa en notas de partidos oficiales (F8/F9) únicamente.
+  matches = onlyOfficialMatches(matches);
   return [...matches]
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .slice(-n)
@@ -428,6 +504,8 @@ function computeTeamFormDots(matches, votes, n = 5) {
 // Jugador del mes: promedio de rendimiento tomando solo los partidos de los últimos `windowDays`
 // días contados desde la fecha más reciente cargada. Usa el mismo matchRating de siempre.
 function computePlayerOfMonth(players, matches, votes, windowDays = 30) {
+  // Jugador del mes = promedio de rendimiento oficial (F8/F9) únicamente.
+  matches = onlyOfficialMatches(matches);
   const latest = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
   if (!latest) return null;
   const cutoff = new Date(latest.date + "T00:00:00");
@@ -456,6 +534,9 @@ function computePlayerOfMonth(players, matches, votes, windowDays = 30) {
 // Movimiento en la tabla: compara la posición en el ranking incluyendo todos los partidos
 // contra la posición que había ANTES de la última fecha cargada (misma fórmula, menos datos).
 function computeRankingMovement(players, matches, votes) {
+  // El movimiento en la tabla se basa en el promedio oficial (F8/F9); el pequeño aporte
+  // de Ranking de F5/F6 no se tiene en cuenta acá (es solo una referencia de tendencia).
+  matches = onlyOfficialMatches(matches);
   const buildOrder = (matchList) => {
     const map = {};
     players.forEach((p) => (map[p.id] = { pj: 0, score: 0 }));
@@ -489,6 +570,34 @@ function computeRankingMovement(players, matches, votes) {
   return movement;
 }
 
+// ---------- Base preparada para un futuro "Ranking ATP" (puntos acumulados) ----------
+// Todavía NO se usa en ninguna pantalla: es solo la estructura de cálculo lista para
+// que, el día de mañana, se pueda activar un ranking estilo ATP por puntos sin tocar
+// el ranking actual (que sigue ordenando por Promedio oficial + aporte F5/F6).
+// Usa únicamente partidos oficiales (F8/F9), igual que el resto de las estadísticas.
+const ATP_POINTS = { win: 3, draw: 1, goal: 1, assist: 0.5, mvp: 2 };
+function computeAtpPointsBase(players, matches, votes) {
+  const map = {};
+  players.forEach((p) => (map[p.id] = { points: 0 }));
+  onlyOfficialMatches(matches).forEach((m) => {
+    const mv = votes[m.id];
+    const teamAGoals = teamGoalsFor(m, "A");
+    const teamBGoals = teamGoalsFor(m, "B");
+    const isDraw = teamAGoals === teamBGoals;
+    m.participants.forEach((part) => {
+      if (!map[part.playerId]) return;
+      const r = matchRating(m, part.playerId, mv);
+      if (!r) return;
+      let pts = isDraw ? ATP_POINTS.draw : r.win ? ATP_POINTS.win : 0;
+      pts += (Number(part.goals) || 0) * ATP_POINTS.goal;
+      pts += (Number(part.assists) || 0) * ATP_POINTS.assist;
+      if (r.votes > 0) pts += ATP_POINTS.mvp;
+      map[part.playerId].points = Math.round((map[part.playerId].points + pts) * 100) / 100;
+    });
+  });
+  return map;
+}
+
 // Incorporación reciente: su primer partido cargado cae dentro de la ventana de días desde la última fecha.
 function isRecentAddition(playerId, matches, windowDays = 30) {
   const latest = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
@@ -503,6 +612,8 @@ function isRecentAddition(playerId, matches, windowDays = 30) {
 
 // Racha goleadora ACTIVA (partidos seguidos anotando hasta hoy, distinto del récord histórico maxGoalStreak).
 function computeActiveGoalStreak(playerId, matches) {
+  // Racha goleadora = solo partidos oficiales (F8/F9): es un logro/récord.
+  matches = onlyOfficialMatches(matches);
   const sorted = [...matches]
     .filter((m) => m.participants.some((p) => p.playerId === playerId))
     .sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -598,6 +709,13 @@ export default function App() {
       const missingPlayers = SEED_PLAYERS.filter((p) => !existingNames.has(p.name.trim().toLowerCase()));
       if (missingPlayers.length > 0) {
         loadedPlayers = [...loadedPlayers, ...missingPlayers.map((p) => ({ id: "p" + p.number, number: p.number, name: p.name, position: p.position }))];
+      }
+      // Limpieza única: "Cristian 8" era un jugador placeholder de una seed anterior y
+      // ya no debe existir en el sistema (no es el jugador real "Cris 8", que sí se
+      // mantiene protegido). Si quedó cargado en Firestore, se elimina automáticamente.
+      const beforeCleanup = loadedPlayers.length;
+      loadedPlayers = loadedPlayers.filter((p) => normalizedPlayerName(p.name) !== "cristian 8");
+      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup) {
         try {
           await window.storage.set("players", JSON.stringify(loadedPlayers), true);
         } catch (e) {}
@@ -710,10 +828,16 @@ export default function App() {
     } catch (e) {}
   }
 
+  // Solo F8/F9 generan estadísticas oficiales (ver isOfficialMode). F5/F6 quedan
+  // completamente afuera de este cálculo: no suman goles, asistencias, MVP, promedio,
+  // récords ni logros. Su único aporte es el Ranking Bonus calculado por separado.
+  const officialMatches = useMemo(() => onlyOfficialMatches(matches), [matches]);
+  const f56Map = useMemo(() => computeF56Bonus(players, matches), [players, matches]);
+
   const totals = useMemo(() => {
     const map = {};
     players.forEach((p) => (map[p.id] = { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0 }));
-    matches.forEach((m) => {
+    officialMatches.forEach((m) => {
       const mv = votes[m.id];
       const w = modePointValue(m.mode);
       m.participants.forEach((p) => {
@@ -731,24 +855,32 @@ export default function App() {
       });
     });
     // Puntos de votos MVP (1 voto = 0,1 pts) y participación ofensiva (goles + asist. ponderados).
-    Object.values(map).forEach((t) => {
+    // Presencias y Ranking Bonus de F5/F6 (NO oficiales) se agregan aparte, sin tocar lo anterior.
+    Object.keys(map).forEach((id) => {
+      const t = map[id];
       t.goalsW = Math.round(t.goalsW * 100) / 100;
       t.assistsW = Math.round(t.assistsW * 100) / 100;
       t.mvpPoints = Math.round(t.votes * MVP_VOTE_POINT * 100) / 100;
       t.offensive = Math.round((t.goalsW + t.assistsW) * 100) / 100;
+      const f56 = f56Map[id] || { presencias: 0, bonus: 0 };
+      t.presenciasF56 = f56.presencias;
+      t.rankingBonus = f56.bonus;
     });
     return map;
-  }, [players, matches, votes]);
+  }, [players, officialMatches, f56Map, votes]);
 
   const ranking = useMemo(
     () =>
       [...players]
         .map((p) => {
-          const t = totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0 };
+          const t = totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, presenciasF56: 0, rankingBonus: 0 };
           const avg = t.pj > 0 ? t.score / t.pj : 0;
-          return { ...p, ...t, avg };
+          // El Ranking general ordena por Promedio oficial (F8/F9) + Ranking Bonus de F5/F6.
+          // El Promedio que se muestra como "Nota"/"Carta" sigue siendo SIEMPRE el oficial puro.
+          const rankingScore = Math.round((avg + (t.rankingBonus || 0)) * 100) / 100;
+          return { ...p, ...t, avg, rankingScore };
         })
-        .sort((a, b) => b.avg - a.avg || b.pj - a.pj),
+        .sort((a, b) => b.rankingScore - a.rankingScore || b.pj - a.pj || b.presenciasF56 - a.presenciasF56),
     [players, totals]
   );
 
@@ -758,14 +890,15 @@ export default function App() {
 
   const profileHistory = useMemo(() => {
     if (!activeProfileId) return [];
-    return matches
+    // Evolución de rendimiento = solo partidos oficiales (F8/F9).
+    return officialMatches
       .filter((m) => m.participants.some((p) => p.playerId === activeProfileId))
       .sort((a, b) => new Date(a.date) - new Date(b.date))
       .map((m) => {
         const r = matchRating(m, activeProfileId, votes[m.id]);
         return { date: m.date, rival: m.teamBName, score: r.rating, mode: m.mode, id: m.id };
       });
-  }, [matches, activeProfileId, votes]);
+  }, [officialMatches, activeProfileId, votes]);
 
   const statsLeaders = useMemo(() => computeStatsLeaders(players, totals, matches, votes), [players, totals, matches, votes]);
   const idealTeam = useMemo(() => idealTeamAllTime(ranking), [ranking]);
@@ -773,10 +906,11 @@ export default function App() {
   const rankingMovement = useMemo(() => computeRankingMovement(players, matches, votes), [players, matches, votes]);
   const teamFormDots = useMemo(() => computeTeamFormDots(matches, votes, 5), [matches, votes]);
   const seasonTotals = useMemo(() => {
-    const totalGoals = matches.reduce((s, m) => s + m.participants.reduce((s2, p) => s2 + (Number(p.goals) || 0), 0), 0);
-    const activePlayers = players.filter((p) => (totals[p.id]?.pj || 0) > 0).length;
+    // Goles históricos = estadística oficial (solo F8/F9).
+    const totalGoals = officialMatches.reduce((s, m) => s + m.participants.reduce((s2, p) => s2 + (Number(p.goals) || 0), 0), 0);
+    const activePlayers = players.filter((p) => matches.some((m) => m.participants.some((x) => x.playerId === p.id))).length;
     return { totalGoals, activePlayers, totalMatches: matches.length };
-  }, [matches, players, totals]);
+  }, [matches, officialMatches, players]);
   const overallAvg = useMemo(() => {
     const withPj = ranking.filter((p) => p.pj > 0);
     if (withPj.length === 0) return 0;
@@ -802,6 +936,11 @@ export default function App() {
 
   async function deletePlayer(id) {
     if (!isAdmin) return;
+    const target = players.find((p) => p.id === id);
+    if (isProtectedPlayer(target)) {
+      setError('El jugador "Cris 8" no se puede eliminar.');
+      return;
+    }
     await savePlayers(players.filter((p) => p.id !== id));
   }
 
@@ -1513,7 +1652,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
         <Trophy size={20} style={{ color: "#FFD54F" }} />
       </div>
       <p className="text-[11px] text-gray-500 mb-3 leading-snug">
-        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio de notas</span>.
+        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio).
       </p>
 
       <div className="flex gap-1.5 mb-2 overflow-x-auto">
@@ -1572,6 +1711,15 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
             <div className="col-span-4 flex items-center gap-2 min-w-0">
               <span className="jersey" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
               <span className="text-sm text-gray-200 truncate">{p.name}</span>
+              {quickTab === "general" && p.rankingBonus > 0 && (
+                <span
+                  className="text-[8px] shrink-0 px-1 py-0.5 rounded-full disp"
+                  style={{ background: "#00C85322", color: "#00C853" }}
+                  title="Aporte de Ranking por presencia en F5/F6 (no es promedio oficial)"
+                >
+                  +{p.rankingBonus.toFixed(1)} F5/F6
+                </span>
+              )}
             </div>
             <div className="col-span-2 flex justify-center">
               <FormDots form={computeRecentForm(p.id, matches, votes, 4)} />
@@ -1638,7 +1786,11 @@ function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen
       {isAdmin ? (
         <div className="flex items-center gap-1 shrink-0">
           <button onClick={onEdit} className="p-1.5 text-gray-500 hover:text-blue-400"><Pencil size={14} /></button>
-          <button onClick={onDelete} className="p-1.5 text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
+          {isProtectedPlayer(p) ? (
+            <span className="p-1.5 text-gray-700" title='"Cris 8" no se puede eliminar'><Lock size={14} /></span>
+          ) : (
+            <button onClick={onDelete} className="p-1.5 text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
+          )}
         </div>
       ) : (
         <ChevronRight size={16} className="text-gray-600 shrink-0" />
@@ -1859,7 +2011,7 @@ function AddMatchModal({ onClose, onSave, players, initial }) {
             <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-2 py-2 text-sm text-gray-200">
               {MODES.map((m) => <option key={m}>{m}</option>)}
             </select>
-            <p className="text-[9px] text-gray-600 mt-1">F9/F8 = 1 pto por gol o asist. · F6/F5 = 0,5 pto.</p>
+            <p className="text-[9px] text-gray-600 mt-1">F9/F8 = estadísticas oficiales (goles, asist., MVP, promedio, logros). F6/F5 = no suman estadísticas oficiales, solo dan hasta +0,3 de Ranking por presencia/triunfo/goleador.</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -2488,6 +2640,11 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
         <span className="flex items-center gap-1 text-gray-400"><Medal size={11} style={{ color: meta.ring }} /> {unlockedCount}/{achievements.length} logros</span>
         <span className="flex items-center gap-1 text-gray-400"><Award size={11} style={{ color: "#FFD54F" }} /> Mejor partido: {bestRating.toFixed(1)} · {maxGoalsMatch} goles</span>
       </div>
+      {(t.presenciasF56 || 0) > 0 && (
+        <div className="relative mt-1.5 text-[9px] text-gray-500">
+          + {t.presenciasF56} presencia{t.presenciasF56 === 1 ? "" : "s"} en F5/F6 (no oficial) · aporte de Ranking: +{(t.rankingBonus || 0).toFixed(1)}
+        </div>
+      )}
     </div>
   );
 }
@@ -2541,7 +2698,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
   if (!profilePlayer) {
     return <p className="text-sm text-gray-500">Sumá jugadores para ver perfiles.</p>;
   }
-  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0 };
+  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0 };
   const avg = t.pj > 0 ? t.score / t.pj : 0;
   const last5 = history.slice(-5);
   const mvpLeaderId = [...players].map((p) => ({ id: p.id, votes: (totals[p.id] || {}).votes || 0 })).sort((a, b) => b.votes - a.votes)[0]?.id;
@@ -2634,7 +2791,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
               </div>
             ))}
           </div>
-          <p className="text-[10px] text-gray-600 -mt-2 mb-4">Ponderación por modalidad: F9/F8 = 1 pto por gol o asistencia · F6/F5 = 0,5 pto. Participación ofensiva = goles ponderados + asistencias ponderadas.</p>
+          <p className="text-[10px] text-gray-600 -mt-2 mb-4">Estadística oficial: solo partidos F8/F9 (1 pto por gol o asistencia). Participación ofensiva = goles ponderados + asistencias ponderadas. F5/F6 no suma acá.</p>
 
           <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Evolución del promedio</h3>
           {history.length < 2 ? (

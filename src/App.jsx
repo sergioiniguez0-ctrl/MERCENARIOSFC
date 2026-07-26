@@ -204,6 +204,35 @@ function computeF56Bonus(players, matches) {
   return map;
 }
 
+// ---------- Sistema de Confianza del Ranking ----------
+// La confianza (0-100%) mide qué tan confiable es la posición de un jugador en el
+// ranking según la CANTIDAD de partidos jugados, en TODAS las modalidades (F5/F6/F8/F9).
+// F8 y F9 aportan más porque son las modalidades oficiales del club; F5 y F6 aportan un
+// aporte menor, ya que son partidos más informales. Nunca supera el 100%. No reemplaza
+// el Promedio oficial (que sigue siendo SIEMPRE score/pj de F8/F9): es un factor aparte
+// que el Ranking usa para no dejar que 1-2 partidos superen a una trayectoria larga.
+const CONFIDENCE_PER_MATCH = {
+  "Fútbol 9": 20,
+  "Fútbol 8": 20,
+  "Fútbol 6": 1,
+  "Fútbol 5": 1,
+};
+const CONFIDENCE_MAX = 100;
+
+function computeConfidenceMap(players, matches) {
+  const map = {};
+  players.forEach((p) => (map[p.id] = 0));
+  (matches || []).forEach((m) => {
+    const inc = CONFIDENCE_PER_MATCH[m.mode] ?? 0;
+    if (inc <= 0) return;
+    m.participants.forEach((part) => {
+      if (!(part.playerId in map)) return;
+      map[part.playerId] = Math.min(CONFIDENCE_MAX, map[part.playerId] + inc);
+    });
+  });
+  return map;
+}
+
 function matchRating(match, playerId, mvpVotes) {
   const p = match.participants.find((x) => x.playerId === playerId);
   if (!p) return null;
@@ -277,7 +306,7 @@ function computeStatsLeaders(players, totals, matches, votes) {
   // estadísticas oficiales: se calculan únicamente con partidos F8/F9.
   matches = onlyOfficialMatches(matches);
   const withPj = players
-    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0 } }))
+    .map((p) => ({ p, t: totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0, confidence: 0 } }))
     .filter((x) => x.t.pj > 0);
 
   const topScorer = [...withPj].sort((a, b) => b.t.goals - a.t.goals)[0];
@@ -833,6 +862,9 @@ export default function App() {
   // récords ni logros. Su único aporte es el Ranking Bonus calculado por separado.
   const officialMatches = useMemo(() => onlyOfficialMatches(matches), [matches]);
   const f56Map = useMemo(() => computeF56Bonus(players, matches), [players, matches]);
+  // Confianza: usa TODAS las modalidades (F5/F6/F8/F9), a diferencia de f56Map que
+  // solo mide el pequeño bonus de presencia de F5/F6.
+  const confidenceMap = useMemo(() => computeConfidenceMap(players, matches), [players, matches]);
 
   const totals = useMemo(() => {
     const map = {};
@@ -865,20 +897,28 @@ export default function App() {
       const f56 = f56Map[id] || { presencias: 0, bonus: 0 };
       t.presenciasF56 = f56.presencias;
       t.rankingBonus = f56.bonus;
+      t.confidence = confidenceMap[id] || 0;
     });
     return map;
-  }, [players, officialMatches, f56Map, votes]);
+  }, [players, officialMatches, f56Map, confidenceMap, votes]);
 
   const ranking = useMemo(
     () =>
       [...players]
         .map((p) => {
-          const t = totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, presenciasF56: 0, rankingBonus: 0 };
+          const t = totals[p.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, presenciasF56: 0, rankingBonus: 0, confidence: 0 };
           const avg = t.pj > 0 ? t.score / t.pj : 0;
-          // El Ranking general ordena por Promedio oficial (F8/F9) + Ranking Bonus de F5/F6.
+          const confidence = t.confidence || 0;
+          // El Ranking general pondera el Promedio oficial (F8/F9) por la Confianza: con
+          // pocos partidos, el promedio se "achica" hacia la base neutra (BASE_RATING = 6)
+          // en vez de usarse puro, para que 1-2 partidos perfectos no superen a un jugador
+          // con trayectoria larga y rendimiento constante. A confianza 100% el promedio no
+          // se ve afectado. El Ranking Bonus de F5/F6 se suma después, sin verse afectado.
           // El Promedio que se muestra como "Nota"/"Carta" sigue siendo SIEMPRE el oficial puro.
-          const rankingScore = Math.round((avg + (t.rankingBonus || 0)) * 100) / 100;
-          return { ...p, ...t, avg, rankingScore };
+          const confidenceFactor = confidence / 100;
+          const confidenceAdjustedAvg = t.pj > 0 ? avg * confidenceFactor + BASE_RATING * (1 - confidenceFactor) : 0;
+          const rankingScore = Math.round((confidenceAdjustedAvg + (t.rankingBonus || 0)) * 100) / 100;
+          return { ...p, ...t, avg, confidence, rankingScore };
         })
         .sort((a, b) => b.rankingScore - a.rankingScore || b.pj - a.pj || b.presenciasF56 - a.presenciasF56),
     [players, totals]
@@ -1652,7 +1692,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
         <Trophy size={20} style={{ color: "#FFD54F" }} />
       </div>
       <p className="text-[11px] text-gray-500 mb-3 leading-snug">
-        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio).
+        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> ponderado por la <b>Confianza</b> (0-100%, sube +20% por partido F8/F9 y +1% por partido F5/F6) + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio). Con poca confianza el promedio pesa menos, así 1-2 partidos no superan a una trayectoria larga.
       </p>
 
       <div className="flex gap-1.5 mb-2 overflow-x-auto">
@@ -1711,6 +1751,15 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
             <div className="col-span-4 flex items-center gap-2 min-w-0">
               <span className="jersey" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
               <span className="text-sm text-gray-200 truncate">{p.name}</span>
+              {quickTab === "general" && p.pj > 0 && (p.confidence || 0) < 100 && (
+                <span
+                  className="text-[8px] shrink-0 px-1 py-0.5 rounded-full disp"
+                  style={{ background: "#FFD54F22", color: "#FFD54F" }}
+                  title="Confianza del ranking: cuántos partidos respaldan esta posición"
+                >
+                  {Math.round(p.confidence || 0)}% conf.
+                </span>
+              )}
               {quickTab === "general" && p.rankingBonus > 0 && (
                 <span
                   className="text-[8px] shrink-0 px-1 py-0.5 rounded-full disp"
@@ -2645,6 +2694,15 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
           + {t.presenciasF56} presencia{t.presenciasF56 === 1 ? "" : "s"} en F5/F6 (no oficial) · aporte de Ranking: +{(t.rankingBonus || 0).toFixed(1)}
         </div>
       )}
+      {t.pj > 0 && (
+        <div className="relative flex items-center gap-1.5 mt-2 pt-2 border-t" style={{ borderColor: meta.ring + "22" }}>
+          <ShieldCheck size={11} style={{ color: meta.ring }} />
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${Math.min(100, t.confidence || 0)}%`, background: meta.ring }} />
+          </div>
+          <span className="text-[9px] text-gray-400 disp shrink-0">{Math.round(t.confidence || 0)}% confianza</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -2698,7 +2756,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
   if (!profilePlayer) {
     return <p className="text-sm text-gray-500">Sumá jugadores para ver perfiles.</p>;
   }
-  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0 };
+  const t = totals[profilePlayer.id] || { pj: 0, goals: 0, assists: 0, votes: 0, ownGoals: 0, score: 0, goalsW: 0, assistsW: 0, mvpPoints: 0, offensive: 0, presenciasF56: 0, rankingBonus: 0, confidence: 0 };
   const avg = t.pj > 0 ? t.score / t.pj : 0;
   const last5 = history.slice(-5);
   const mvpLeaderId = [...players].map((p) => ({ id: p.id, votes: (totals[p.id] || {}).votes || 0 })).sort((a, b) => b.votes - a.votes)[0]?.id;

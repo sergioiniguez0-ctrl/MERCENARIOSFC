@@ -25,14 +25,17 @@
 // Usuario y contraseña por defecto (si no configurás las variables de
 // entorno de arriba):
 //   usuario:     admin
-//   contraseña:  mercenarios2026
+//   contraseña:  Mercenarios2026*
 // Te recomendamos cambiarla antes de compartir el link del sitio.
+// (Actualizada en la v3.0. Para cambiarla de nuevo más adelante sin tocar
+// variables de entorno, generá un hash nuevo con el snippet de arriba y
+// reemplazá el valor de DEFAULT_ADMIN_PASS_HASH.)
 
 export const ADMIN_USER = import.meta.env.VITE_ADMIN_USER || "admin";
 
-// SHA-256 de "mercenarios2026"
+// SHA-256 de "Mercenarios2026*"
 const DEFAULT_ADMIN_PASS_HASH =
-  "284f4ca746acfb3fc033ffe0624b15c8c9d6e7be1eafd1b1334ddcae8a53bb98";
+  "cc88727adb623ba290479a5047069b37e141c33e263bb493b3550a67e57f2e78";
 
 export const ADMIN_PASS_HASH =
   import.meta.env.VITE_ADMIN_PASS_HASH || DEFAULT_ADMIN_PASS_HASH;

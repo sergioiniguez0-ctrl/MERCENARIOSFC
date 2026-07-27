@@ -9,12 +9,54 @@ import {
 } from "recharts";
 import { verifyAdminCredentials } from "./lib/auth";
 
+// ---------- Biblioteca de avatares Pixel Art (v3.0) ----------
+// Para agregar un avatar nuevo alcanza con soltar el PNG (fondo transparente) en
+// src/assets/avatars/ — se detecta solo, no hace falta tocar código. AVATAR_LIST
+// queda ordenado por nombre de archivo y AVATARS mapea "avatar_01" -> url de la
+// imagen para poder guardar solo el id en el jugador (liviano en Firestore).
+const AVATAR_MODULES = import.meta.glob("./assets/avatars/*.png", { eager: true, import: "default" });
+const AVATAR_LIST = Object.keys(AVATAR_MODULES)
+  .sort()
+  .map((path) => {
+    const id = path.split("/").pop().replace(/\.png$/, "");
+    return { id, url: AVATAR_MODULES[path] };
+  });
+const AVATARS = Object.fromEntries(AVATAR_LIST.map((a) => [a.id, a.url]));
+
+// ---------- Posiciones (v3.0) ----------
+// Lista detallada de posiciones que ve/elige el usuario. Cada una pertenece a un
+// "grupo" (ARQ/DEF/MED/DEL) que es el que se sigue usando para armar formaciones,
+// el Equipo de la Fecha, el Equipo Ideal y los filtros de línea (arqueros/defensores/
+// mediocampistas/delanteros): así toda la lógica de puntaje y armado de equipos
+// existente sigue funcionando exactamente igual, solo que ahora hay más detalle.
 const POSITIONS = [
-  { id: "ARQ", label: "Arquero" },
-  { id: "DEF", label: "Defensor" },
-  { id: "MED", label: "Mediocampista" },
-  { id: "DEL", label: "Delantero" },
+  { id: "ARQ", label: "Arquero", group: "ARQ" },
+  { id: "DFC", label: "Defensor Central", group: "DEF" },
+  { id: "LAT", label: "Lateral", group: "DEF" },
+  { id: "VOD", label: "Volante Defensivo", group: "MED" },
+  { id: "VOF", label: "Volante Ofensivo", group: "MED" },
+  { id: "DC", label: "Delantero Centro", group: "DEL" },
+  { id: "EXT", label: "Extremo", group: "DEL" },
 ];
+const POSITION_GROUPS = [
+  { id: "ARQ", label: "Arquero" },
+  { id: "DEF", label: "Defensa" },
+  { id: "MED", label: "Mediocampo" },
+  { id: "DEL", label: "Ataque" },
+];
+// Compatibilidad: jugadores viejos que todavía tengan guardada una posición del
+// sistema anterior (ARQ/DEF/MED/DEL "genéricas") se migran automáticamente a una
+// posición específica por defecto la primera vez que carga la app (ver más abajo,
+// cerca de la carga de jugadores). posGroup() además sirve de resguardo extra: si
+// por algún motivo quedara un valor viejo sin migrar, lo sigue reconociendo.
+const LEGACY_POSITION_DEFAULT = { DEF: "DFC", MED: "VOD", DEL: "DC" };
+function posGroup(id) {
+  const found = POSITIONS.find((p) => p.id === id);
+  if (found) return found.group;
+  if (POSITION_GROUPS.some((g) => g.id === id)) return id;
+  return id;
+}
+const DOMINANT_FOOT_OPTIONS = ["Derecho", "Izquierdo", "Ambidiestro"];
 const MODES = ["Fútbol 5", "Fútbol 6", "Fútbol 8", "Fútbol 9"];
 // Puntuación ponderada por modalidad (goles/asistencias reales -> puntos ponderados).
 // F9 y F8: 1 punto por gol/asistencia · F6 y F5: 0,5 puntos por gol/asistencia.
@@ -164,7 +206,11 @@ const SEED_MATCHES = [
 ];
 
 function posLabel(id) {
-  return POSITIONS.find((p) => p.id === id)?.label || id;
+  return (
+    POSITIONS.find((p) => p.id === id)?.label ||
+    POSITION_GROUPS.find((g) => g.id === id)?.label ||
+    id
+  );
 }
 
 function nextNumber(players) {
@@ -242,7 +288,8 @@ function matchRating(match, playerId, mvpVotes) {
   const assists = Number(p.assists) || 0;
   const ownGoals = Number(p.ownGoals) || 0;
   const win = teamGoals > rivalGoals;
-  const cleanSheet = (p.position === "ARQ" || p.position === "DEF") && rivalGoals === 0;
+  const pGroup = posGroup(p.position);
+  const cleanSheet = (pGroup === "ARQ" || pGroup === "DEF") && rivalGoals === 0;
   const votes = mvpVotes ? Object.values(mvpVotes).filter((v) => v === playerId).length : 0;
   const awards = (match.awards || []).filter((a) => a.playerId === playerId);
   let rating = BASE_RATING;
@@ -264,7 +311,8 @@ function buildTeamOfMatch(match, players, votes) {
     const r = matchRating(match, p.playerId, votes[match.id]);
     const pl = players.find((x) => x.id === p.playerId);
     if (!r || !pl) return;
-    const bucket = byPos[p.position] ? p.position : "MED";
+    const pg = posGroup(p.position);
+    const bucket = byPos[pg] ? pg : "MED";
     byPos[bucket].push({ playerId: p.playerId, name: pl.name, number: pl.number, rating: r.rating });
   });
   Object.keys(byPos).forEach((k) => byPos[k].sort((a, b) => b.rating - a.rating));
@@ -316,7 +364,7 @@ function computeStatsLeaders(players, totals, matches, votes) {
   const highestAvg = [...withPj].sort((a, b) => b.t.score / b.t.pj - a.t.score / a.t.pj)[0];
   const mostOffensive = [...withPj].sort((a, b) => (b.t.offensive || 0) - (a.t.offensive || 0))[0];
 
-  const keepers = withPj.filter((x) => x.p.position === "ARQ");
+  const keepers = withPj.filter((x) => posGroup(x.p.position) === "ARQ");
   const cleanSheetsMap = {};
   matches.forEach((m) => {
     const mv = votes[m.id];
@@ -359,7 +407,8 @@ function idealTeamAllTime(ranking) {
   const formation = { ARQ: 1, DEF: 3, MED: 2, DEL: 3 };
   const byPos = { ARQ: [], DEF: [], MED: [], DEL: [] };
   ranking.forEach((p) => {
-    if (p.pj > 0 && byPos[p.position]) byPos[p.position].push(p);
+    const pg = posGroup(p.position);
+    if (p.pj > 0 && byPos[pg]) byPos[pg].push(p);
   });
   Object.keys(byPos).forEach((k) => byPos[k].sort((a, b) => b.avg - a.avg));
   const team = {};
@@ -696,10 +745,14 @@ function ClubLogo({ size = 34 }) {
 // Hoy usa las siluetas por posición. Si en el futuro un jugador tiene `player.avatarUrl`
 // cargado, se muestra esa imagen en el mismo círculo sin tocar el resto del componente.
 function PlayerAvatar({ player, ring, size = 72 }) {
-  if (player?.avatarUrl) {
+  const avatarSrc = (player?.avatarId && AVATARS[player.avatarId]) || player?.avatarUrl;
+  if (avatarSrc) {
     return (
-      <div className="rounded-full overflow-hidden" style={{ width: size, height: size, border: `2px solid ${ring}` }}>
-        <img src={player.avatarUrl} alt={player.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <div
+        className="rounded-full overflow-hidden flex items-center justify-center"
+        style={{ width: size, height: size, border: `2px solid ${ring}`, background: "linear-gradient(160deg,#161b22,#05070a)" }}
+      >
+        <img src={avatarSrc} alt={player.name} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
       </div>
     );
   }
@@ -744,7 +797,36 @@ export default function App() {
       // mantiene protegido). Si quedó cargado en Firestore, se elimina automáticamente.
       const beforeCleanup = loadedPlayers.length;
       loadedPlayers = loadedPlayers.filter((p) => normalizedPlayerName(p.name) !== "cristian 8");
-      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup) {
+      // Migración v3.0: las posiciones genéricas viejas (DEF/MED/DEL) pasan a una
+      // posición específica por defecto (el arquero no cambia, ya era específico).
+      // No se pierde información: solo se afina el dato, y el admin puede editarlo
+      // libremente en cualquier momento desde el panel.
+      let positionsMigrated = false;
+      loadedPlayers = loadedPlayers.map((p) => {
+        const migrated = LEGACY_POSITION_DEFAULT[p.position];
+        if (migrated) {
+          positionsMigrated = true;
+          return { ...p, position: migrated };
+        }
+        return p;
+      });
+      // Asignación automática v3.0: todo jugador que todavía no tenga un avatar
+      // asignado (ni el nuevo avatarId ni el viejo avatarUrl) recibe uno del
+      // sprite sheet original, para que nadie se quede con el ícono genérico de
+      // silueta por posición. Es determinístico (mismo jugador → mismo avatar
+      // siempre) y el administrador puede cambiarlo cuando quiera desde "Editar
+      // jugador".
+      let avatarsAssigned = false;
+      if (AVATAR_LIST.length > 0) {
+        loadedPlayers = loadedPlayers.map((p, i) => {
+          if (!p.avatarId && !p.avatarUrl) {
+            avatarsAssigned = true;
+            return { ...p, avatarId: AVATAR_LIST[i % AVATAR_LIST.length].id };
+          }
+          return p;
+        });
+      }
+      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup || positionsMigrated || avatarsAssigned) {
         try {
           await window.storage.set("players", JSON.stringify(loadedPlayers), true);
         } catch (e) {}
@@ -761,8 +843,26 @@ export default function App() {
       const missingMatches = SEED_MATCHES.filter((m) => !existingMatchIds.has(m.id));
       let mutated = missingMatches.length > 0;
       if (missingMatches.length > 0) {
-        loadedMatches = [...loadedMatches.map((m) => ({ ...m, votingOpen: false })), ...missingMatches];
+        // v3.0: ya no se cierra la votación de los partidos existentes acá tampoco
+        // (la votación nunca se cierra sola, solo con el botón del administrador).
+        loadedMatches = [...loadedMatches, ...missingMatches];
       }
+      // Migración v3.0: las posiciones genéricas con las que jugó cada participante
+      // en partidos ya cargados también pasan a la posición específica por defecto,
+      // igual que con el plantel, para que "Jugó de" y los filtros queden consistentes.
+      loadedMatches = loadedMatches.map((m) => {
+        let matchChanged = false;
+        const migratedParticipants = m.participants.map((part) => {
+          const migrated = LEGACY_POSITION_DEFAULT[part.position];
+          if (migrated) {
+            matchChanged = true;
+            return { ...part, position: migrated };
+          }
+          return part;
+        });
+        if (matchChanged) mutated = true;
+        return matchChanged ? { ...m, participants: migratedParticipants } : m;
+      });
       // Corrección puntual: Zuko hizo 3 goles, no 2, en el partido del 20/07.
       loadedMatches = loadedMatches.map((m) => {
         if (m.id !== "m20260720") return m;
@@ -957,20 +1057,51 @@ export default function App() {
     return withPj.reduce((s, p) => s + p.avg, 0) / withPj.length;
   }, [ranking]);
 
-  async function addPlayer(name, position) {
+  async function addPlayer(data) {
     if (!isAdmin) return;
     if (players.length >= MAX_PLAYERS) {
       setError("Ya hay 30 jugadores cargados.");
       return;
     }
-    const p = { id: "p" + Date.now(), name: name.trim(), position, number: nextNumber(players) };
+    const dorsal = Number(data.number);
+    const number = dorsal && !players.some((p) => p.number === dorsal) ? dorsal : nextNumber(players);
+    const defaultAvatarId = AVATAR_LIST.length > 0 ? AVATAR_LIST[players.length % AVATAR_LIST.length].id : undefined;
+    const p = {
+      id: "p" + Date.now(),
+      name: data.name.trim(),
+      position: data.position,
+      number,
+      avatarId: data.avatarId || defaultAvatarId,
+      age: data.age ? Number(data.age) : undefined,
+      dominantFoot: data.dominantFoot || undefined,
+    };
     await savePlayers([...players, p]);
     setShowAddPlayer(false);
   }
 
-  async function editPlayer(id, name, position) {
+  async function editPlayer(id, data) {
     if (!isAdmin) return;
-    await savePlayers(players.map((p) => (p.id === id ? { ...p, name: name.trim(), position } : p)));
+    const dorsal = Number(data.number);
+    const dorsalTaken = dorsal && players.some((p) => p.id !== id && p.number === dorsal);
+    if (dorsalTaken) {
+      setError(`El dorsal #${dorsal} ya lo tiene otro jugador.`);
+      return;
+    }
+    await savePlayers(
+      players.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              name: data.name.trim(),
+              position: data.position,
+              number: dorsal || p.number,
+              avatarId: data.avatarId || undefined,
+              age: data.age ? Number(data.age) : undefined,
+              dominantFoot: data.dominantFoot || undefined,
+            }
+          : p
+      )
+    );
     setEditingPlayerId(null);
   }
 
@@ -986,9 +1117,10 @@ export default function App() {
 
   async function addMatch(form) {
     if (!isAdmin) return;
-    const closedPrev = matches.map((m) => ({ ...m, votingOpen: false }));
+    // v3.0: la votación de partidos anteriores YA NO se cierra sola al cargar un
+    // partido nuevo. Solo el administrador puede cerrarla, con "Cerrar votación".
     const newMatch = { ...form, id: "m" + Date.now(), votingOpen: true };
-    await saveMatches([...closedPrev, newMatch]);
+    await saveMatches([...matches, newMatch]);
     setShowAddMatch(false);
   }
 
@@ -1008,7 +1140,15 @@ export default function App() {
 
   async function closeVoting(matchId) {
     if (!isAdmin) return;
+    // El ranking, el MVP y las estadísticas se recalculan solos: se derivan en vivo
+    // de "matches" + "votes" (ver totals/ranking/statsLeaders más abajo), así que no
+    // hace falta ningún paso extra acá aparte de guardar el estado de la votación.
     await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: false } : m)));
+  }
+
+  async function reopenVoting(matchId) {
+    if (!isAdmin) return;
+    await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: true } : m)));
   }
 
   async function submitVote(matchId, mvpId) {
@@ -1152,6 +1292,7 @@ export default function App() {
             onAdd={() => setShowAddMatch(true)}
             onVote={submitVote}
             onCloseVoting={closeVoting}
+            onReopenVoting={reopenVoting}
             onEdit={(id) => setEditingMatchId(id)}
             onDelete={(id) => {
               if (window.confirm("¿Borrar este partido? Esta acción no se puede deshacer.")) deleteMatch(id);
@@ -1246,7 +1387,10 @@ export default function App() {
                 className="flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-800 hover:border-blue-700/60 text-left transition-colors"
                 style={{ background: "rgba(255,255,255,0.03)" }}
               >
-                <span className="jersey">{p.number}</span>
+                <div className="relative shrink-0">
+                  <PlayerAvatar player={p} ring="#0D6EFD" size={34} />
+                  <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 14, height: 14, fontSize: 7, background: "#0b0d11", border: "1.5px solid #0D6EFD", color: "#6fa0ff" }}>{p.number}</span>
+                </div>
                 <span className="text-sm text-gray-200">{p.name}</span>
                 <span className="text-[10px] text-gray-500 ml-auto">{posLabel(p.position)}</span>
               </button>
@@ -1269,7 +1413,7 @@ export default function App() {
       {editingPlayerId && isAdmin && (
         <AddPlayerModal
           onClose={() => setEditingPlayerId(null)}
-          onSave={(name, position) => editPlayer(editingPlayerId, name, position)}
+          onSave={(data) => editPlayer(editingPlayerId, data)}
           count={players.length}
           initial={players.find((p) => p.id === editingPlayerId)}
         />
@@ -1670,7 +1814,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
     if (quickTab === "asistidores") return [...withPj].sort((a, b) => b.assists - a.assists);
     if (quickTab === "vallas")
       return [...withPj]
-        .filter((p) => p.position === "ARQ" || p.position === "DEF")
+        .filter((p) => posGroup(p.position) === "ARQ" || posGroup(p.position) === "DEF")
         .sort((a, b) => (leaders.cleanSheetsMap[b.id] || 0) - (leaders.cleanSheetsMap[a.id] || 0));
     return filtered; // general: ya viene ordenado por promedio
   }, [filtered, quickTab, leaders]);
@@ -1808,7 +1952,10 @@ function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen
       style={{ background: "rgba(255,255,255,0.02)" }}
     >
       <button onClick={onOpen} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-        <span className="jersey shrink-0">{p.number}</span>
+        <div className="relative shrink-0">
+          <PlayerAvatar player={p} ring={meta.ring} size={38} />
+          <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 16, height: 16, fontSize: 8, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{p.number}</span>
+        </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-sm text-gray-200 truncate">{p.name}</span>
@@ -1884,7 +2031,7 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
   };
 
   const groups = posFilter === "ALL"
-    ? LINE_GROUPS.map(([id, label]) => [id, label, filtered.filter((x) => x.p.position === id).sort(sorter)])
+    ? LINE_GROUPS.map(([id, label]) => [id, label, filtered.filter((x) => posGroup(x.p.position) === id).sort(sorter)])
     : [[posFilter, posLabel(posFilter), [...filtered].sort(sorter)]];
 
   return (
@@ -1966,13 +2113,43 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
 function AddPlayerModal({ onClose, onSave, count, initial }) {
   const isEdit = !!initial;
   const [name, setName] = useState(initial?.name || "");
-  const [position, setPosition] = useState(initial?.position || "MED");
+  const [position, setPosition] = useState(initial?.position || "VOD");
+  const [number, setNumber] = useState(initial?.number ?? "");
+  const [avatarId, setAvatarId] = useState(initial?.avatarId || "");
+  const [age, setAge] = useState(initial?.age ?? "");
+  const [dominantFoot, setDominantFoot] = useState(initial?.dominantFoot || "");
+
+  function handleSave() {
+    onSave({ name, position, number, avatarId, age, dominantFoot });
+  }
+
   return (
     <Modal onClose={onClose} title={isEdit ? "Editar jugador" : "Sumar jugador"}>
       {!isEdit && count >= MAX_PLAYERS ? (
         <p className="text-sm text-red-400">Ya están los 30 jugadores cargados.</p>
       ) : (
         <div className="flex flex-col gap-3">
+          <div>
+            <label className="text-[11px] text-gray-500">Avatar</label>
+            <div className="grid grid-cols-5 gap-2 mt-1 max-h-40 overflow-y-auto p-1 rounded-xl border border-gray-800" style={{ background: "rgba(255,255,255,0.02)" }}>
+              {AVATAR_LIST.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setAvatarId(avatarId === a.id ? "" : a.id)}
+                  className="rounded-full overflow-hidden flex items-center justify-center aspect-square"
+                  style={{
+                    background: "linear-gradient(160deg,#161b22,#05070a)",
+                    border: avatarId === a.id ? "2px solid #0D6EFD" : "2px solid #1f2937",
+                  }}
+                  title={a.id}
+                >
+                  <img src={a.url} alt={a.id} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+                </button>
+              ))}
+            </div>
+            {AVATAR_LIST.length === 0 && <p className="text-[10px] text-gray-600 mt-1">Todavía no hay avatares cargados.</p>}
+          </div>
           <div>
             <label className="text-[11px] text-gray-500">Nombre</label>
             <input
@@ -1981,6 +2158,32 @@ function AddPlayerModal({ onClose, onSave, count, initial }) {
               placeholder="Ej: Franco Díaz"
               className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
             />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[11px] text-gray-500">Dorsal</label>
+              <input
+                type="number"
+                min="1"
+                max={MAX_PLAYERS}
+                value={number}
+                onChange={(e) => setNumber(e.target.value)}
+                placeholder="Automático"
+                className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500">Edad</label>
+              <input
+                type="number"
+                min="0"
+                max="99"
+                value={age}
+                onChange={(e) => setAge(e.target.value)}
+                placeholder="No especificado"
+                className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+              />
+            </div>
           </div>
           <div>
             <label className="text-[11px] text-gray-500">Posición</label>
@@ -1997,9 +2200,24 @@ function AddPlayerModal({ onClose, onSave, count, initial }) {
               ))}
             </div>
           </div>
+          <div>
+            <label className="text-[11px] text-gray-500">Pie dominante</label>
+            <div className="grid grid-cols-3 gap-2 mt-1">
+              {DOMINANT_FOOT_OPTIONS.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setDominantFoot(dominantFoot === f ? "" : f)}
+                  className="text-xs py-2 rounded-xl border"
+                  style={dominantFoot === f ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             disabled={!name.trim()}
-            onClick={() => onSave(name, position)}
+            onClick={handleSave}
             className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
             style={name.trim() ? { background: "#0D6EFD" } : {}}
           >
@@ -2188,7 +2406,7 @@ function AddMatchModal({ onClose, onSave, players, initial }) {
   );
 }
 
-function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, onVote, onCloseVoting, onEdit, onDelete }) {
+function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete }) {
   const sorted = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date));
   return (
     <div>
@@ -2216,6 +2434,7 @@ function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, o
             isAdmin={isAdmin}
             onVote={onVote}
             onCloseVoting={onCloseVoting}
+            onReopenVoting={onReopenVoting}
             onEdit={() => onEdit(m.id)}
             onDelete={() => onDelete(m.id)}
           />
@@ -2225,7 +2444,7 @@ function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, o
   );
 }
 
-function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseVoting, onEdit, onDelete }) {
+function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete }) {
   const [showTeam, setShowTeam] = useState(false);
   const teamAGoals = teamGoalsFor(m, "A");
   const teamBGoals = teamGoalsFor(m, "B");
@@ -2345,8 +2564,29 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
               )}
             </div>
           )}
-          {m.votingOpen && isAdmin && (
-            <button onClick={() => onCloseVoting(m.id)} className="text-[10px] text-gray-600 mt-1.5 underline">Cerrar votación ahora</button>
+          {isAdmin && (
+            <>
+              {m.votingOpen ? (
+                <button
+                  onClick={() => {
+                    if (window.confirm("¿Cerrar la votación de este partido? Se bloquearán los votos y se define la Figura del partido. Podés reabrirla después si hace falta.")) {
+                      onCloseVoting(m.id);
+                    }
+                  }}
+                  className="text-[10px] text-gray-600 mt-1.5 underline"
+                >
+                  Cerrar votación
+                </button>
+              ) : (
+                <button
+                  onClick={() => onReopenVoting(m.id)}
+                  className="text-[10px] mt-1.5 underline"
+                  style={{ color: "#6fa0ff" }}
+                >
+                  Reabrir votación
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -2494,7 +2734,14 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
       <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
         <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Tu identidad</div>
         <div className="flex items-center gap-3">
-          <span className="jersey" style={{ width: 40, height: 40 }}>{currentPlayer ? currentPlayer.number : "?"}</span>
+          {currentPlayer ? (
+            <div className="relative shrink-0">
+              <PlayerAvatar player={currentPlayer} ring="#0D6EFD" size={40} />
+              <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 16, height: 16, fontSize: 8, background: "#0b0d11", border: "1.5px solid #0D6EFD", color: "#6fa0ff" }}>{currentPlayer.number}</span>
+            </div>
+          ) : (
+            <span className="jersey" style={{ width: 40, height: 40 }}>?</span>
+          )}
           <div className="flex-1 min-w-0">
             <div className="disp text-white text-sm truncate">{currentPlayer ? currentPlayer.name : "Sin elegir"}</div>
             <div className="text-[10px] text-gray-500">{currentPlayer ? posLabel(currentPlayer.position) : "Elegí quién sos para votar"}</div>
@@ -2605,7 +2852,7 @@ function AvatarArquero({ color }) {
 }
 const POSITION_AVATAR = { DEL: AvatarDelantero, MED: AvatarMediocampista, DEF: AvatarDefensor, ARQ: AvatarArquero };
 function PositionAvatar({ position, ring, size = 72 }) {
-  const Comp = POSITION_AVATAR[position] || AvatarMediocampista;
+  const Comp = POSITION_AVATAR[posGroup(position)] || AvatarMediocampista;
   return (
     <div className="rounded-full flex items-center justify-center p-3" style={{ width: size, height: size, background: "linear-gradient(160deg,#161b22,#05070a)", border: `2px solid ${ring}` }}>
       <Comp color={ring} />
@@ -2640,7 +2887,7 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
       <div className="relative flex items-start justify-between">
         <div>
           <div className="disp leading-none" style={{ fontFamily: "'Bebas Neue','Oswald',sans-serif", fontSize: 40, color: meta.ring }}>{avg.toFixed(2)}</div>
-          <div className="text-[10px] text-gray-300 disp -mt-1">Promedio · {player.position}</div>
+          <div className="text-[10px] text-gray-300 disp -mt-1">Promedio · {posLabel(player.position)}</div>
         </div>
         <span className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-full border disp" style={{ borderColor: meta.ring + "88", color: meta.ring, background: "#00000055" }}>
           {meta.emoji} {meta.label}
@@ -2748,6 +2995,7 @@ const PERFIL_SECTIONS = [
   ["carta", "Carta"],
   ["evolucion", "Evolución"],
   ["logros", "Logros"],
+  ["info", "Información"],
 ];
 
 function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, matches, votes }) {
@@ -2889,6 +3137,29 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
           <h3 className="disp text-sm text-gray-300 mb-2 mt-5 tracking-wide uppercase">Tus récords personales</h3>
           <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
             <PersonalRecords player={profilePlayer} matches={matches} votes={votes} mvpPoints={t.mvpPoints} />
+          </div>
+        </div>
+      )}
+
+      {section === "info" && (
+        <div>
+          <div className="flex flex-col items-center mb-4">
+            <PlayerAvatar player={profilePlayer} ring={meta.ring} size={88} />
+          </div>
+          <h3 className="disp text-sm text-gray-300 mb-2 tracking-wide uppercase">Información del jugador</h3>
+          <div className="rounded-2xl border border-gray-800 p-4 flex flex-col gap-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+            {[
+              ["Nombre", profilePlayer.name],
+              ["Dorsal", `#${profilePlayer.number}`],
+              ["Posición", posLabel(profilePlayer.position)],
+              ["Edad", profilePlayer.age ? `${profilePlayer.age} años` : "No especificado"],
+              ["Pie dominante", profilePlayer.dominantFoot || "No especificado"],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between text-xs border-b border-gray-900 pb-2 last:border-0 last:pb-0">
+                <span className="text-gray-500">{label}</span>
+                <span className="text-gray-200 disp">{value}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}

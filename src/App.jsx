@@ -8,6 +8,12 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
 import { verifyAdminCredentials } from "./lib/auth";
+import { computeMarketValue, formatMarketValue, formatMarketVariation } from "./lib/marketValue";
+import { computeCommitment } from "./lib/commitment";
+import { computePotreroPaths, POTRERO_PATHS_CONFIG } from "./lib/potreroPaths";
+import { assignMissionIfNeeded, evaluateAssignment, cancelAssignmentsForMatch, getRevealedMissions, hasActiveMission } from "./lib/secretMissionsStore";
+import { loadUpcomingMatchday, saveUpcomingMatchday, clearUpcomingMatchday, draftAsShellMatch } from "./lib/upcomingMatchday";
+import { computeMatchRating } from "./lib/rating";
 
 // ---------- Biblioteca de avatares Pixel Art (v3.0) ----------
 // Para agregar un avatar nuevo alcanza con soltar el PNG (fondo transparente) en
@@ -279,30 +285,11 @@ function computeConfidenceMap(players, matches) {
   return map;
 }
 
-function matchRating(match, playerId, mvpVotes) {
-  const p = match.participants.find((x) => x.playerId === playerId);
-  if (!p) return null;
-  const teamGoals = teamGoalsFor(match, p.team);
-  const rivalGoals = teamGoalsFor(match, p.team === "A" ? "B" : "A");
-  const goals = Number(p.goals) || 0;
-  const assists = Number(p.assists) || 0;
-  const ownGoals = Number(p.ownGoals) || 0;
-  const win = teamGoals > rivalGoals;
-  const pGroup = posGroup(p.position);
-  const cleanSheet = (pGroup === "ARQ" || pGroup === "DEF") && rivalGoals === 0;
-  const votes = mvpVotes ? Object.values(mvpVotes).filter((v) => v === playerId).length : 0;
-  const awards = (match.awards || []).filter((a) => a.playerId === playerId);
-  let rating = BASE_RATING;
-  rating += goals * GOAL_INC;
-  rating += assists * ASSIST_INC;
-  rating += cleanSheet ? CLEAN_SHEET_INC : 0;
-  rating += win ? WIN_INC : 0;
-  rating += Math.min(votes, VOTE_CAP) * VOTE_INC;
-  rating += awards.length * AWARD_INC;
-  rating -= ownGoals * OWN_GOAL_DEC;
-  rating = Math.min(RATING_MAX, Math.max(RATING_MIN, rating));
-  return { rating, goals, assists, ownGoals, votes, awards, win, cleanSheet, teamGoals, rivalGoals };
-}
+// v3.3: el Puntaje por partido se calcula en src/lib/rating.js (misma lógica de
+// siempre, con los coeficientes por posición centralizados en sportsConfig.js).
+// Se deja el nombre `matchRating` como alias para no tener que tocar ninguno de
+// los usos existentes en el resto de este archivo.
+const matchRating = computeMatchRating;
 
 function buildTeamOfMatch(match, players, votes) {
   const formation = FORMATIONS[match.mode] || FORMATIONS["Fútbol 9"];
@@ -777,6 +764,7 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [editingPlayerId, setEditingPlayerId] = useState(null);
   const [editingMatchId, setEditingMatchId] = useState(null);
+  const [upcomingMatchday, setUpcomingMatchday] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -797,19 +785,15 @@ export default function App() {
       // mantiene protegido). Si quedó cargado en Firestore, se elimina automáticamente.
       const beforeCleanup = loadedPlayers.length;
       loadedPlayers = loadedPlayers.filter((p) => normalizedPlayerName(p.name) !== "cristian 8");
-      // Migración v3.0: las posiciones genéricas viejas (DEF/MED/DEL) pasan a una
-      // posición específica por defecto (el arquero no cambia, ya era específico).
-      // No se pierde información: solo se afina el dato, y el admin puede editarlo
-      // libremente en cualquier momento desde el panel.
-      let positionsMigrated = false;
-      loadedPlayers = loadedPlayers.map((p) => {
-        const migrated = LEGACY_POSITION_DEFAULT[p.position];
-        if (migrated) {
-          positionsMigrated = true;
-          return { ...p, position: migrated };
-        }
-        return p;
-      });
+      // v3.1: ya NO se migra automáticamente la posición genérica (DEF/MED/DEL) a una
+      // posición específica al abrir la app. "MED" no siempre es "VOD", "DEL" no
+      // siempre es "DC", "DEF" no siempre es "DFC" — forzarlo sería inventar un dato
+      // que el administrador nunca cargó. Las posiciones genéricas quedan como
+      // válidas de compatibilidad (posGroup() y los coeficientes del Valor
+      // Mercenario en marketValue.js ya las reconocen y usan un coeficiente
+      // promedio del grupo) y el administrador puede afinar la posición de cada
+      // jugador, cuando quiera, desde "Editar jugador" — la app nunca la reescribe
+      // sola ni la guarda en Firestore por su cuenta.
       // Asignación automática v3.0: todo jugador que todavía no tenga un avatar
       // asignado (ni el nuevo avatarId ni el viejo avatarUrl) recibe uno del
       // sprite sheet original, para que nadie se quede con el ícono genérico de
@@ -826,7 +810,7 @@ export default function App() {
           return p;
         });
       }
-      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup || positionsMigrated || avatarsAssigned) {
+      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup || avatarsAssigned) {
         try {
           await window.storage.set("players", JSON.stringify(loadedPlayers), true);
         } catch (e) {}
@@ -847,22 +831,10 @@ export default function App() {
         // (la votación nunca se cierra sola, solo con el botón del administrador).
         loadedMatches = [...loadedMatches, ...missingMatches];
       }
-      // Migración v3.0: las posiciones genéricas con las que jugó cada participante
-      // en partidos ya cargados también pasan a la posición específica por defecto,
-      // igual que con el plantel, para que "Jugó de" y los filtros queden consistentes.
-      loadedMatches = loadedMatches.map((m) => {
-        let matchChanged = false;
-        const migratedParticipants = m.participants.map((part) => {
-          const migrated = LEGACY_POSITION_DEFAULT[part.position];
-          if (migrated) {
-            matchChanged = true;
-            return { ...part, position: migrated };
-          }
-          return part;
-        });
-        if (matchChanged) mutated = true;
-        return matchChanged ? { ...m, participants: migratedParticipants } : m;
-      });
+      // v3.1: ídem que con el plantel — ya no se migra automáticamente la posición
+      // genérica con la que jugó cada participante en partidos ya cargados. El
+      // dato queda tal cual está guardado; "Jugó de" y los filtros ya reconocen
+      // tanto las posiciones específicas como las genéricas de compatibilidad.
       // Corrección puntual: Zuko hizo 3 goles, no 2, en el partido del 20/07.
       loadedMatches = loadedMatches.map((m) => {
         if (m.id !== "m20260720") return m;
@@ -899,6 +871,12 @@ export default function App() {
         if (r && JSON.parse(r.value) === true) setIsAdmin(true);
       } catch (e) {
         // sin sesión de administrador guardada, sigue como visitante
+      }
+      try {
+        const draft = await loadUpcomingMatchday(window.storage);
+        setUpcomingMatchday(draft);
+      } catch (e) {
+        setUpcomingMatchday(null);
       }
       setLoading(false);
     })();
@@ -1115,13 +1093,75 @@ export default function App() {
     await savePlayers(players.filter((p) => p.id !== id));
   }
 
-  async function addMatch(form) {
+  async function addMatch(form, linkUpcoming) {
     if (!isAdmin) return;
     // v3.0: la votación de partidos anteriores YA NO se cierra sola al cargar un
     // partido nuevo. Solo el administrador puede cerrarla, con "Cerrar votación".
-    const newMatch = { ...form, id: "m" + Date.now(), votingOpen: true };
+    const useLink = !!linkUpcoming && upcomingMatchday && upcomingMatchday.confirmed;
+    const newMatch = {
+      ...form,
+      id: useLink ? upcomingMatchday.id : "m" + Date.now(),
+      votingOpen: true,
+      ...(useLink ? { missionsLinked: true, missionPlayerIds: upcomingMatchday.convocadoIds } : {}),
+    };
     await saveMatches([...matches, newMatch]);
     setShowAddMatch(false);
+
+    // v3.8: acá YA NO se evalúa ninguna misión — el partido recién se crea con
+    // `votingOpen: true` y los votos todavía no están cargados (evaluar acá
+    // hacía que las misiones de votos expiraran siempre con 0 votos). La
+    // relación con los convocados queda guardada en el propio partido
+    // (`missionsLinked`/`missionPlayerIds`), así que la convocatoria pendiente
+    // ya se puede limpiar; la evaluación real ocurre en `closeVoting`.
+    if (useLink) {
+      await clearUpcomingMatchday(window.storage);
+      setUpcomingMatchday(null);
+    }
+  }
+
+  // v3.7 — flujo administrativo mínimo de "Próxima fecha": crea/edita el
+  // borrador de convocatoria (sin confirmar todavía, se puede seguir editando).
+  async function saveUpcomingDraft(draft) {
+    if (!isAdmin) return;
+    await saveUpcomingMatchday(window.storage, draft);
+    setUpcomingMatchday(draft);
+  }
+
+  // Confirma la convocatoria y asigna, EN ESE MOMENTO, una misión secreta a
+  // cada convocado. Es el único lugar de toda la app donde se llama a
+  // `assignMissionIfNeeded` — nunca se asignan misiones para partidos ya
+  // jugados, cerrados o sin esta confirmación explícita.
+  async function confirmUpcomingDraft(draft) {
+    if (!isAdmin) return;
+    const confirmed = { ...draft, confirmed: true };
+    await saveUpcomingMatchday(window.storage, confirmed);
+    setUpcomingMatchday(confirmed);
+    const shellMatch = draftAsShellMatch(confirmed, players);
+    const officialNow = onlyOfficialMatches(matches);
+    for (const playerId of confirmed.convocadoIds) {
+      const player = players.find((p) => p.id === playerId);
+      if (!player) continue;
+      try {
+        await assignMissionIfNeeded({ storage: window.storage, match: shellMatch, player, allOfficialMatches: officialNow, votes });
+      } catch (e) {
+        setError('No se pudo asignar la misión secreta a ' + player.name + ": " + e.message);
+      }
+    }
+  }
+
+  async function discardUpcomingDraft() {
+    if (!isAdmin || !upcomingMatchday) return;
+    // v3.8: descartar una convocatoria YA CONFIRMADA no puede dejar misiones
+    // activas huérfanas para siempre. Se cancelan explícitamente (nunca se
+    // borran silenciosamente) y recién después se limpia el borrador.
+    if (upcomingMatchday.confirmed) {
+      if (!window.confirm("¿Cancelar esta convocatoria? Las misiones secretas ya asignadas a los convocados van a quedar canceladas (no se muestran como activas, completadas ni fallidas).")) {
+        return;
+      }
+      await cancelAssignmentsForMatch(window.storage, upcomingMatchday.id, upcomingMatchday.convocadoIds);
+    }
+    await clearUpcomingMatchday(window.storage);
+    setUpcomingMatchday(null);
   }
 
   async function editMatch(id, form) {
@@ -1143,11 +1183,32 @@ export default function App() {
     // El ranking, el MVP y las estadísticas se recalculan solos: se derivan en vivo
     // de "matches" + "votes" (ver totals/ranking/statsLeaders más abajo), así que no
     // hace falta ningún paso extra acá aparte de guardar el estado de la votación.
-    await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: false } : m)));
+    const nextMatches = matches.map((m) => (m.id === matchId ? { ...m, votingOpen: false } : m));
+    await saveMatches(nextMatches);
+
+    // v3.8: recién ACÁ, con la votación ya cerrada y los votos ya cargados, se
+    // evalúan (una sola vez, de forma idempotente — evaluateAssignment no toca
+    // una asignación que ya dejó de estar "active") las misiones secretas
+    // vinculadas a este partido, si las tiene. Esto es lo que permite que
+    // las misiones de tipo VOTE_COUNT se comprueben con los votos reales.
+    const closedMatch = nextMatches.find((m) => m.id === matchId);
+    if (closedMatch && closedMatch.missionsLinked && closedMatch.missionPlayerIds) {
+      const officialNow = onlyOfficialMatches(nextMatches);
+      for (const playerId of closedMatch.missionPlayerIds) {
+        try {
+          await evaluateAssignment({ storage: window.storage, matchId, playerId, allOfficialMatches: officialNow, votes });
+        } catch (e) {
+          // No bloquea el cierre de votación por un error puntual de misiones.
+        }
+      }
+    }
   }
 
   async function reopenVoting(matchId) {
     if (!isAdmin) return;
+    // v3.8: reabrir la votación NUNCA vuelve a evaluar ni modifica misiones ya
+    // procesadas — acá no se llama a `evaluateAssignment` bajo ninguna
+    // circunstancia. Las que quedaron "completed" o "expired" siguen así.
     await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: true } : m)));
   }
 
@@ -1330,6 +1391,10 @@ export default function App() {
             isAdmin={isAdmin}
             onLogin={() => setShowLogin(true)}
             onLogout={logoutAdmin}
+            upcomingMatchday={upcomingMatchday}
+            onSaveUpcoming={saveUpcomingDraft}
+            onConfirmUpcoming={confirmUpcomingDraft}
+            onDiscardUpcoming={discardUpcomingDraft}
           />
         )}
         {tab === "perfil" && (
@@ -1419,7 +1484,7 @@ export default function App() {
         />
       )}
       {showAddMatch && isAdmin && (
-        <AddMatchModal onClose={() => setShowAddMatch(false)} onSave={addMatch} players={players} />
+        <AddMatchModal onClose={() => setShowAddMatch(false)} onSave={addMatch} players={players} upcomingMatchday={upcomingMatchday} />
       )}
       {editingMatchId && isAdmin && (
         <AddMatchModal
@@ -1836,7 +1901,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
         <Trophy size={20} style={{ color: "#FFD54F" }} />
       </div>
       <p className="text-[11px] text-gray-500 mb-3 leading-snug">
-        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1), asistencia (+0.6), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> ponderado por la <b>Confianza</b> (0-100%, sube +20% por partido F8/F9 y +1% por partido F5/F6) + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio). Con poca confianza el promedio pesa menos, así 1-2 partidos no superan a una trayectoria larga.
+        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1 × coef. de posición), asistencia (+0.6 × coef. de posición), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). El coeficiente de posición (ver "Valor Mercenario") pondera solo los puntos que aportan el gol y la asistencia — el gol y la asistencia en sí siguen contando igual como estadística. Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> ponderado por la <b>Confianza</b> (0-100%, sube +20% por partido F8/F9 y +1% por partido F5/F6) + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio). Con poca confianza el promedio pesa menos, así 1-2 partidos no superan a una trayectoria larga.
       </p>
 
       <div className="flex gap-1.5 mb-2 overflow-x-auto">
@@ -2229,10 +2294,12 @@ function AddPlayerModal({ onClose, onSave, count, initial }) {
   );
 }
 
-function AddMatchModal({ onClose, onSave, players, initial }) {
+function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) {
   const isEdit = !!initial;
-  const [date, setDate] = useState(initial?.date || new Date().toISOString().slice(0, 10));
-  const [mode, setMode] = useState(initial?.mode || MODES[0]);
+  const canLinkUpcoming = !isEdit && !!upcomingMatchday && upcomingMatchday.confirmed;
+  const [linkUpcoming, setLinkUpcoming] = useState(canLinkUpcoming);
+  const [date, setDate] = useState(initial?.date || (canLinkUpcoming ? upcomingMatchday.date : new Date().toISOString().slice(0, 10)));
+  const [mode, setMode] = useState(initial?.mode || (canLinkUpcoming ? upcomingMatchday.mode : MODES[0]));
   const [teamAName, setTeamAName] = useState(initial?.teamAName || "Equipo A");
   const [teamBName, setTeamBName] = useState(initial?.teamBName || "Equipo B");
   const [rows, setRows] = useState(initial?.participants || []);
@@ -2393,9 +2460,19 @@ function AddMatchModal({ onClose, onSave, players, initial }) {
           </div>
         </div>
 
+        {canLinkUpcoming && (
+          <label className="flex items-start gap-2 text-xs text-gray-300 rounded-xl border border-gray-800 p-2.5 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+            <input type="checkbox" className="mt-0.5" checked={linkUpcoming} onChange={(e) => setLinkUpcoming(e.target.checked)} />
+            <span>
+              Vincular con la convocatoria pendiente del {upcomingMatchday.date} ({upcomingMatchday.mode}) y evaluar ahora las misiones
+              secretas ya asignadas a esos convocados.
+            </span>
+          </label>
+        )}
+
         <button
           disabled={rows.length === 0}
-          onClick={() => onSave({ date, mode, teamAName, teamBName, participants: rows, awards })}
+          onClick={() => onSave({ date, mode, teamAName, teamBName, participants: rows, awards }, linkUpcoming)}
           className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
           style={rows.length > 0 ? { background: "#0D6EFD" } : {}}
         >
@@ -2723,7 +2800,7 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
   );
 }
 
-function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmin, onLogin, onLogout }) {
+function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmin, onLogin, onLogout, upcomingMatchday, onSaveUpcoming, onConfirmUpcoming, onDiscardUpcoming }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -2787,10 +2864,83 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
         )}
       </div>
 
+      {isAdmin && (
+        <UpcomingMatchdayCard players={players} draft={upcomingMatchday} onSave={onSaveUpcoming} onConfirm={onConfirmUpcoming} onDiscard={onDiscardUpcoming} />
+      )}
+
       <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
         <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Acerca de</div>
         <div className="text-sm text-gray-300 disp">Mercenarios FC</div>
         <div className="text-[10px] text-gray-500">{season} · Estadísticas del grupo</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Próxima fecha: convocatoria mínima + asignación de misiones secretas ---------- */
+
+function UpcomingMatchdayCard({ players, draft, onSave, onConfirm, onDiscard }) {
+  const [date, setDate] = useState(draft?.date || new Date().toISOString().slice(0, 10));
+  const [mode, setMode] = useState(draft?.mode || "Fútbol 8");
+  const [convocadoIds, setConvocadoIds] = useState(draft?.convocadoIds || []);
+
+  function toggle(id) {
+    setConvocadoIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  if (draft && draft.confirmed) {
+    return (
+      <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+        <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Próxima fecha — convocatoria confirmada</div>
+        <div className="text-sm text-gray-300">{draft.date} · {draft.mode} · {draft.convocadoIds.length} convocados</div>
+        <div className="text-[10px] text-gray-500 mt-1">Ya se asignó una misión secreta a cada convocado. Cargá el resultado desde "Partidos" marcando la opción de vincular con esta convocatoria.</div>
+        <button onClick={onDiscard} className="mt-3 text-xs px-3 py-1.5 rounded-full text-gray-300 border border-gray-700">Descartar convocatoria</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Próxima fecha</div>
+      <div className="text-[10px] text-gray-500 mb-3">Fecha, modalidad y convocados — todavía sin capitanes, presupuesto ni equipos.</div>
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div>
+          <label className="text-[10px] text-gray-500">Fecha</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500">Modalidad</label>
+          <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white">
+            <option>Fútbol 8</option>
+            <option>Fútbol 9</option>
+          </select>
+        </div>
+      </div>
+      <div className="text-[10px] text-gray-500 mb-1">Convocados ({convocadoIds.length})</div>
+      <div className="flex flex-wrap gap-1.5 mb-3 max-h-40 overflow-y-auto">
+        {players.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => toggle(p.id)}
+            className="text-[11px] px-2.5 py-1 rounded-full border"
+            style={convocadoIds.includes(p.id) ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "white" } : { borderColor: "#374151", color: "#9ca3af" }}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <button onClick={() => onSave({ id: draft?.id || "u" + Date.now(), date, mode, convocadoIds, confirmed: false })} className="text-xs px-3 py-1.5 rounded-full text-gray-300 border border-gray-700" disabled={convocadoIds.length === 0}>
+          Guardar borrador
+        </button>
+        <button
+          onClick={() => onConfirm({ id: draft?.id || "u" + Date.now(), date, mode, convocadoIds, confirmed: false })}
+          disabled={convocadoIds.length === 0}
+          className="text-xs px-3 py-1.5 rounded-full text-white disabled:bg-gray-800 disabled:text-gray-600"
+          style={convocadoIds.length > 0 ? { background: "#0D6EFD" } : {}}
+        >
+          Confirmar y asignar misiones
+        </button>
       </div>
     </div>
   );
@@ -2871,30 +3021,43 @@ function TrendChip({ trend }) {
 
 /* ---------- Carta de jugador estilo videojuego (solo datos reales) ---------- */
 
-function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
+function PlayerCard({ player, players, t, matches, votes, isMvpLeader }) {
   const avg = t.pj > 0 ? t.score / t.pj : 0;
   const tier = tierFromAvg(avg, t.pj, isMvpLeader);
   const meta = CARD_TIERS[tier];
+  const trend = computeTrend(player, matches, votes);
   const { list: achievements, maxGoalsMatch, bestRating } = computeAchievements(player, matches, votes);
   const unlockedCount = achievements.filter((a) => a.unlocked).length;
-  const { level, progress } = computeLevel(t, matches, player, unlockedCount);
-  const trend = computeTrend(player, matches, votes);
+  const mv = useMemo(() => computeMarketValue(player, players, matches, votes), [player, players, matches, votes]);
+  const commitment = useMemo(() => computeCommitment(player, matches), [player, matches]);
+  const variationColor = mv.lastVariation > 0 ? "#00C853" : mv.lastVariation < 0 ? "#FF5252" : "#9ca3af";
 
   return (
     <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
       <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-30 pointer-events-none" style={{ background: `radial-gradient(circle, ${meta.ring}, transparent 70%)`, filter: "blur(6px)" }} />
 
       <div className="relative flex items-start justify-between">
-        <div>
-          <div className="disp leading-none" style={{ fontFamily: "'Bebas Neue','Oswald',sans-serif", fontSize: 40, color: meta.ring }}>{avg.toFixed(2)}</div>
-          <div className="text-[10px] text-gray-300 disp -mt-1">Promedio · {posLabel(player.position)}</div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="text-[8px] text-gray-400 uppercase tracking-wider">Puntaje</div>
+            <div className="disp leading-none" style={{ fontFamily: "'Bebas Neue','Oswald',sans-serif", fontSize: 34, color: meta.ring }}>{avg.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-[8px] text-gray-400 uppercase tracking-wider">Valor Mercenario</div>
+            <div className="disp leading-none" style={{ fontFamily: "'Bebas Neue','Oswald',sans-serif", fontSize: 34, color: "#e8b4bd" }}>{formatMarketValue(mv.current)}</div>
+            {mv.current !== null && (
+              <div className="disp text-[10px] font-bold" style={{ color: variationColor }}>{formatMarketVariation(mv.lastVariation)} esta fecha</div>
+            )}
+          </div>
         </div>
-        <span className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-full border disp" style={{ borderColor: meta.ring + "88", color: meta.ring, background: "#00000055" }}>
+      </div>
+      <div className="relative mt-1.5">
+        <span className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-full border disp w-fit" style={{ borderColor: meta.ring + "88", color: meta.ring, background: "#00000055" }}>
           {meta.emoji} {meta.label}
         </span>
       </div>
 
-      <div className="relative flex flex-col items-center mt-1">
+      <div className="relative flex flex-col items-center mt-2">
         <div className="relative">
           <PlayerAvatar player={player} ring={meta.ring} size={78} />
           <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 26, height: 26, fontSize: 11, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{player.number}</span>
@@ -2906,12 +3069,13 @@ function PlayerCard({ player, t, matches, votes, isMvpLeader }) {
 
       <div className="relative mt-3">
         <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
-          <span className="flex items-center gap-1"><Clock size={11} style={{ color: meta.ring }} /> Nivel {level} · trayectoria</span>
-          <span>{progress}/100 XP</span>
+          <span className="flex items-center gap-1"><Clock size={11} style={{ color: meta.ring }} /> Compromiso · presencia</span>
+          <span>{commitment.percentage !== null ? `${commitment.percentage}%` : "—"}</span>
         </div>
         <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
-          <div className="h-full rounded-full" style={{ width: progress + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
+          <div className="h-full rounded-full" style={{ width: (commitment.percentage ?? 0) + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
         </div>
+        <div className="text-[8px] text-gray-600 mt-1 italic">El compromiso se calcula únicamente por partidos jugados.</div>
       </div>
 
       <div className="relative grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t" style={{ borderColor: meta.ring + "33" }}>
@@ -2994,9 +3158,92 @@ function AchievementsGrid({ player, matches, votes }) {
 const PERFIL_SECTIONS = [
   ["carta", "Carta"],
   ["evolucion", "Evolución"],
+  ["caminos", "Caminos"],
+  ["misiones", "Misiones"],
   ["logros", "Logros"],
   ["info", "Información"],
 ];
+
+/* ---------- Caminos de Potrero: trayectoria histórica, no son misiones ni niveles ---------- */
+
+function PotreroPathsList({ player, matches, votes }) {
+  const paths = useMemo(() => computePotreroPaths(player, matches, votes), [player, matches, votes]);
+  return (
+    <div className="flex flex-col gap-2.5">
+      {paths.map((path) => {
+        const prevMin = path.isMaxed ? null : POTRERO_PATHS_CONFIG.find((c) => c.id === path.id).tiers.slice().reverse().find((t) => t.min <= path.value)?.min ?? 0;
+        const pct = path.isMaxed
+          ? 100
+          : Math.min(100, Math.round(((path.value - prevMin) / Math.max(1, path.nextRequirement - prevMin)) * 100));
+        return (
+          <div key={path.id} className="rounded-2xl border border-gray-800 p-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+            <div className="flex items-center justify-between">
+              <div className="disp text-xs text-gray-300 uppercase tracking-wide">{path.name}</div>
+              <div className="disp text-[13px]" style={{ color: "#e8b4bd" }}>{path.currentTitle}</div>
+            </div>
+            <div className="text-[9px] text-gray-500 mt-0.5">{path.statLabel}: {path.value}</div>
+            <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden mt-1.5">
+              <div className="h-full rounded-full" style={{ width: pct + "%", background: "linear-gradient(90deg, #7c2d3a, #e8b4bd)" }} />
+            </div>
+            <div className="text-[9px] text-gray-500 mt-1">
+              {path.isMaxed ? "Escalón más alto alcanzado." : `Próximo: "${path.nextTitle}" al llegar a ${path.nextRequirement}.`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SecretMissionsPanel({ player }) {
+  const [state, setState] = useState({ loading: true, revealed: [], active: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [revealed, active] = await Promise.all([
+          getRevealedMissions(window.storage, player.id),
+          hasActiveMission(window.storage, player.id),
+        ]);
+        if (!cancelled) setState({ loading: false, revealed, active });
+      } catch (e) {
+        if (!cancelled) setState({ loading: false, revealed: [], active: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [player.id]);
+
+  if (state.loading) return <p className="text-xs text-gray-600">Cargando misiones...</p>;
+
+  return (
+    <div>
+      {state.active && (
+        <div className="text-[11px] text-gray-400 mb-3 rounded-xl border border-gray-800 p-2.5" style={{ background: "rgba(255,255,255,0.03)" }}>
+          Tenés una misión activa para la próxima fecha.
+        </div>
+      )}
+      {state.revealed.length === 0 ? (
+        <p className="text-xs text-gray-600">Todavía no hay misiones secretas completadas y reveladas.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {state.revealed
+            .slice()
+            .reverse()
+            .map((r, i) => (
+              <div key={r.matchId + "_" + i} className="rounded-2xl border border-gray-800 p-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+                <div className="disp text-xs" style={{ color: "#e8b4bd" }}>{r.title}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">{r.description}</div>
+                {r.revealText && <div className="text-[9px] text-gray-600 mt-1 italic">"{r.revealText}"</div>}
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, matches, votes }) {
   const [section, setSection] = useState("carta");
@@ -3014,7 +3261,9 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
   const trend = computeTrend(profilePlayer, matches, votes);
   const { list: achievements } = computeAchievements(profilePlayer, matches, votes);
   const unlockedCount = achievements.filter((a) => a.unlocked).length;
-  const { level, progress, weeksInTeam } = computeLevel(t, matches, profilePlayer, unlockedCount);
+  const { weeksInTeam } = computeLevel(t, matches, profilePlayer, unlockedCount);
+  const mv = useMemo(() => computeMarketValue(profilePlayer, players, matches, votes), [profilePlayer, players, matches, votes]);
+  const commitment = useMemo(() => computeCommitment(profilePlayer, matches), [profilePlayer, matches]);
 
   return (
     <div>
@@ -3045,7 +3294,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
       </div>
 
       {section === "carta" && (
-        <PlayerCard player={profilePlayer} t={t} matches={matches} votes={votes} isMvpLeader={isMvpLeader} />
+        <PlayerCard player={profilePlayer} players={players} t={t} matches={matches} votes={votes} isMvpLeader={isMvpLeader} />
       )}
 
       {section === "evolucion" && (
@@ -3055,30 +3304,63 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
             style={{ borderColor: meta.ring + "55", background: `linear-gradient(160deg, ${meta.ring}22, #0b0d11 65%)`, boxShadow: `0 12px 32px -12px ${meta.ring}66` }}
           >
             <div className="flex items-start justify-between">
-              <div>
-                <div className="disp text-4xl" style={{ color: meta.ring }}>{avg ? avg.toFixed(2) : "—"}</div>
-                <div className="text-[9px] text-gray-400 uppercase tracking-wider">Promedio de rendimiento</div>
+              <div className="grid grid-cols-2 gap-5">
+                <div>
+                  <div className="disp text-4xl" style={{ color: meta.ring }}>{avg ? avg.toFixed(2) : "—"}</div>
+                  <div className="text-[9px] text-gray-400 uppercase tracking-wider">Puntaje</div>
+                </div>
+                <div>
+                  <div className="disp text-4xl" style={{ color: "#e8b4bd" }}>{formatMarketValue(mv.current)}</div>
+                  <div className="text-[9px] text-gray-400 uppercase tracking-wider">Valor Mercenario</div>
+                  {mv.current !== null && (
+                    <div className="disp text-[11px] font-bold" style={{ color: mv.lastVariation > 0 ? "#00C853" : mv.lastVariation < 0 ? "#FF5252" : "#9ca3af" }}>
+                      {formatMarketVariation(mv.lastVariation)} esta fecha
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="relative">
+              <div className="relative shrink-0">
                 <PlayerAvatar player={profilePlayer} ring={meta.ring} size={56} />
                 <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 20, height: 20, fontSize: 9, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{profilePlayer.number}</span>
               </div>
             </div>
-            <div className="mt-2">
+            <div className="mt-3">
               <div className="disp text-white text-2xl leading-tight">{profilePlayer.name}</div>
               <div className="text-xs text-gray-400">{posLabel(profilePlayer.position)} · {meta.emoji} {meta.label}</div>
             </div>
             <div className="mt-2"><TrendChip trend={trend} /></div>
+
             <div className="mt-4">
               <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1">
-                <span className="flex items-center gap-1"><Clock size={12} style={{ color: meta.ring }} /> Nivel {level} — trayectoria en el plantel</span>
-                <span>{progress}/100 XP</span>
+                <span className="flex items-center gap-1"><Clock size={12} style={{ color: meta.ring }} /> Compromiso · presencia</span>
+                <span>{commitment.percentage !== null ? `${commitment.percentage}%` : "—"}</span>
               </div>
               <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
-                <div className="h-full rounded-full" style={{ width: progress + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
+                <div className="h-full rounded-full" style={{ width: (commitment.percentage ?? 0) + "%", background: `linear-gradient(90deg, ${meta.ring}, #ffffff55)` }} />
               </div>
-              <div className="text-[9px] text-gray-600 mt-1">{t.pj} partidos disputados · ~{weeksInTeam} semanas en el plantel · {unlockedCount} logros — el nivel no depende del promedio.</div>
+              <div className="text-[9px] text-gray-600 mt-1">
+                {commitment.pj} partidos jugados (F5-F9) · racha actual {commitment.currentStreak} · mayor racha {commitment.bestStreak} · ~{weeksInTeam} semanas en el plantel · {unlockedCount} logros
+              </div>
+              <div className="text-[8px] text-gray-600 mt-0.5 italic">El compromiso se calcula únicamente por partidos jugados.</div>
             </div>
+
+            {mv.history.length > 0 && (
+              <div className="mt-4 pt-3 border-t" style={{ borderColor: meta.ring + "22" }}>
+                <div className="flex items-center justify-between text-[9px] text-gray-500 mb-1.5">
+                  <span className="uppercase tracking-wider text-gray-400">Historial de cotización</span>
+                  <span>Máx <span className="text-gray-300">{formatMarketValue(mv.maxHistoric)}</span> · Mín <span className="text-gray-300">{formatMarketValue(mv.minHistoric)}</span></span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {mv.history.slice(-4).reverse().map((h) => (
+                    <div key={h.matchId} className="flex items-center justify-between text-[10px]">
+                      <span className="text-gray-500">{h.date}</span>
+                      <span className="text-gray-300 disp">{formatMarketValue(h.value)}</span>
+                      <span className="disp" style={{ color: h.variation > 0 ? "#00C853" : h.variation < 0 ? "#FF5252" : "#9ca3af" }}>{formatMarketVariation(h.variation)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-4 gap-2 mb-2">
@@ -3127,6 +3409,28 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
             ))}
             {history.length === 0 && <p className="text-xs text-gray-600">Todavía no jugó ningún partido cargado.</p>}
           </div>
+        </div>
+      )}
+
+      {section === "caminos" && (
+        <div>
+          <h3 className="disp text-sm text-gray-300 mb-1 tracking-wide uppercase">Caminos de Potrero</h3>
+          <p className="text-[10px] text-gray-500 mb-3 leading-snug">
+            La trayectoria histórica del jugador, con estadísticas reales — no son misiones ni niveles.
+          </p>
+          <PotreroPathsList player={profilePlayer} matches={matches} votes={votes} />
+        </div>
+      )}
+
+      {section === "misiones" && (
+        <div>
+          <h3 className="disp text-sm text-gray-300 mb-1 tracking-wide uppercase">Misiones secretas</h3>
+          <p className="text-[10px] text-gray-500 mb-3 leading-snug">
+            Antes de cada fecha se asigna una misión secreta oculta a cada convocado — nadie ve su contenido hasta que se cumple.
+            Se revela solo si se completó; si no, caduca en silencio, sin penalidad. No afectan el Puntaje ni el Valor Mercenario.
+            La asignación automática antes del partido se activa cuando esté lista la Central de la Fecha.
+          </p>
+          <SecretMissionsPanel player={profilePlayer} />
         </div>
       )}
 

@@ -1,3 +1,4 @@
+import { isScoringAward } from "./recognitions.js";
 // ---------- Valor Mercenario (v3.2 — corregido) ----------
 // Sigue siendo 100% independiente del Puntaje/Promedio existente en App.jsx (no se
 // importa nada de acá desde ese cálculo, y este módulo no toca la constante base
@@ -89,7 +90,7 @@ function matchPerformanceScore(match, participant, mvpVotes) {
   const loss = teamGoals < rivalGoals;
   const group = posGroupOf(participant.position);
   const cleanSheet = (group === "ARQ" || group === "DEF") && rivalGoals === 0;
-  const awardsCount = (match.awards || []).filter((a) => a.playerId === participant.playerId).length;
+  const awardsCount = (match.awards || []).filter((a) => a.playerId === participant.playerId && isScoringAward(a)).length;
   const votesCount = mvpVotes ? Object.values(mvpVotes).filter((v) => v === participant.playerId).length : 0;
   const cappedVotes = Math.min(votesCount, PERFORMANCE_WEIGHTS.voteCap);
 

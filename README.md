@@ -1,138 +1,45 @@
-# Mercenarios FC — Estadísticas
+# Mercenarios FC — Club semanal, versión 2.0
 
-App de estadísticas para el equipo amateur "Mercenarios FC": ranking individual,
-partidos, perfiles de jugador estilo ficha, estadísticas del plantel y votación
-de figura del partido. Hecha con React + Vite + Tailwind.
+La app incorpora 50 jugadores, acceso sin correo con nombre y PIN, perfiles personalizables, previa con equipos, convocatoria, reconocimientos y Diario Mercenarios. Las fotos quedaron fuera de esta versión.
 
-## Estructura del proyecto
+El punto de entrada sigue siendo `src/main.jsx`, que importa **`src/App.jsx`**. El `App.jsx` de la raíz es un archivo legado y no se utiliza en el build.
 
-```
-mercenarios-fc-app/
-├── index.html              # HTML raíz (viewport mobile, título, favicon)
-├── package.json
-├── vite.config.js
-├── tailwind.config.js
-├── postcss.config.js
-├── src/
-│   ├── main.jsx             # Punto de entrada, monta <App />
-│   ├── App.jsx               # Toda la app (lógica + interfaz)
-│   ├── index.css             # Directivas de Tailwind
-│   └── lib/
-│       └── storagePolyfill.js  # Ver nota abajo
-```
+## Funciones
 
-## Sobre el guardado de datos
+- Hasta 50 jugadores. Dorsales únicos del 1 al 99, con opciones ocupadas bloqueadas y reserva validada en una transacción del servidor.
+- 63 avatares: 15 PNG originales y 48 variantes vectoriales pixel de potrero, con diferentes tonos de piel, peinados y colores de camiseta.
+- Apodo visible, edad, dorsal, avatar, posición principal y secundaria, pierna hábil, frase de hasta 120 caracteres y seis colores de perfil. El jugador modifica solo su perfil. Nombre legal y estadísticas quedan a cargo del administrador.
+- Primer PIN de seis dígitos entregado por el administrador desde Ajustes. El jugador puede cambiarlo en Mi perfil → Info. Restablecer un PIN invalida sus sesiones anteriores. No hay registro por mail ni posibilidad de reclamar un perfil ajeno simplemente eligiendo el nombre.
+- Previa pública con fecha, modalidad, convocados, respuestas Voy/No voy/Por confirmar y equipos A/B.
+- Equipos manuales o automáticos: promedian el nivel estimado por rendimiento y confianza, equilibran posiciones y distribuyen arqueros. Muestran promedio oficial, nivel estimado, total de Valor Mercenario y cantidad de jugadores. El nivel sin datos oficiales parte de 6. El valor total se indica como parcial si faltan cotizaciones.
+- Cambio de equipo e intercambio de dos jugadores; diferencia de nivel recalculada al instante. Historial de cruce solo si los planteles son exactamente los mismos, incluso con A/B invertidos.
+- Confirmar una previa vincula las misiones existentes a los convocados. Al cargar el resultado, los participantes y equipos se traen desde esa previa. La fecha y modalidad de una convocatoria confirmada no se cambian: se descarta y se crea otra si hace falta. Los convocados sí pueden ajustarse.
+- Gol del partido, atajada de la fecha, asistencia del partido, defensor, goleador, motor, revelación y jugada. El MVP mantiene su votación existente. Un voto por jugador y categoría, solo de participantes, mientras la votación esté abierta. Gol/asistencia/atajadas/defensor/goleador limitan candidatos según los datos registrados. Los empates se muestran explícitamente.
+- Cerrar la votación fija las distinciones de la comunidad en una transacción. Aparecen en el partido, perfil y diario. Reabrir vuelve a habilitar votos pendientes y retira las distinciones comunitarias definitivas hasta el nuevo cierre.
+- Las nuevas distinciones no agregan puntos a la Nota ni al Valor Mercenario. Los reconocimientos históricos mantienen el cálculo anterior. Las misiones y logros pueden reconocer distinciones, sin inventar acciones.
+- Diario semanal por semanas de lunes a domingo en horario argentino. Titular, resultados, goles/asistencias registrados, MVP provisional o definitivo, reconocimientos, podio, movimientos respecto del inicio de semana, hasta seis rachas/marcas relevantes y próxima fecha. Ediciones anteriores consultables; se actualizan si se corrigen datos. F5/F6 no se suman a goles/asistencias oficiales. No se narran acciones que no están registradas.
+- Actualización al volver a la pestaña, cada 45 segundos y con el botón Actualizar. Una falla de red no borra el estado visible ni crea datos de ejemplo.
 
-La app guarda jugadores, partidos, votos y "quién sos" usando una API
-`window.storage`. Esa API es propia del entorno de Artifacts de Claude.ai y
-**no existe en un navegador común**. Para que el proyecto funcione igual en
-Vercel o en tu celular, `src/lib/storagePolyfill.js` implementa la misma
-interfaz (`get/set/delete/list`) usando `localStorage` del navegador.
+## Activar antes de publicar
 
-No se tocó ninguna línea de lógica de `App.jsx`: el polyfill se carga antes
-de montar la app y `App.jsx` sigue llamando a `window.storage` exactamente
-igual que antes.
+**Subir únicamente el frontend no activa el PIN.** La misma publicación en Vercel debe incluir `api/club.js` y `server/`, las variables privadas y las reglas de Firestore. Consultar `ACTIVACION.md`.
 
-**Importante:** con `localStorage`, los datos quedan guardados en el
-navegador/dispositivo de cada persona, no en un servidor compartido. Si dos
-personas entran desde celulares distintos, cada una tiene su propia copia de
-los datos (jugadores, partidos, votos). Si más adelante querés que todo el
-equipo vea los mismos datos en tiempo real, hay que sumar un backend (por
-ejemplo Supabase, Firebase o una API propia) — avisame y lo armamos.
+Los registros existentes se conservan en `mercenarios/shared/storage`: `players`, `matches`, `votes` y `upcomingMatchday`. Las asignaciones usan el prefijo existente `missionAssignment:`. No se renumeran IDs ni se insertan jugadores/partidos de ejemplo en producción.
 
-## Acceso de administrador
+## Desarrollo y validación
 
-La app tiene un login simple para que solo el administrador pueda cargar y
-editar jugadores y partidos. Cualquier visitante puede seguir viendo todo
-(ranking, estadísticas, partidos, votar la figura del partido) sin iniciar
-sesión — el login solo desbloquea los botones de "Sumar jugador", "Cargar
-partido", editar/borrar y cerrar votación.
-
-**Usuario y contraseña por defecto:**
-- Usuario: `admin`
-- Contraseña: `mercenarios2026`
-
-Se accede desde la pestaña **Ajustes → Acceso administrador**, o tocando el
-candado que aparece arriba a la derecha en el encabezado.
-
-**Importante:** esta es una app 100% frontend, sin servidor propio, así que
-esta verificación corre en el navegador — no es un login de nivel bancario.
-Alcanza para que el grupo no edite datos sin querer o por curiosidad, pero
-alguien con muchos conocimientos técnicos podría revisar el código del
-build. Te recomendamos cambiar la contraseña por defecto antes de compartir
-el link, configurando estas variables de entorno antes de compilar (por
-ejemplo en Vercel → Settings → Environment Variables):
-
-```
-VITE_ADMIN_USER=tu-usuario
-VITE_ADMIN_PASS_HASH=hash-sha256-de-tu-contraseña
-```
-
-Para generar el hash, abrí la consola del navegador (F12) en cualquier
-página y ejecutá:
-
-```js
-crypto.subtle.digest("SHA-256", new TextEncoder().encode("tu-contraseña-nueva"))
-  .then(b => console.log([...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join("")))
-```
-
-y copiá el resultado como valor de `VITE_ADMIN_PASS_HASH`.
-
-La sesión de administrador se guarda solo en el navegador/dispositivo desde
-el que se inició sesión (igual que "quién sos"), así que cada dispositivo
-necesita loguearse por separado.
-
-## Desarrollo local
-
-Requisitos: Node.js 18 o superior.
+Requiere Node 22 o superior.
 
 ```bash
-npm install
+npm ci
 npm run dev
-```
-
-Abre la URL que te muestra la terminal (por defecto `http://localhost:5173`).
-
-Para probarla desde tu celular en la misma red Wi-Fi, `vite.config.js` ya
-tiene `server.host = true`: correla con `npm run dev` y entrá desde el
-celular a `http://<IP-de-tu-compu>:5173`.
-
-## Build de producción
-
-```bash
+npm test
+npm run verify:legacy
 npm run build
-npm run preview   # para revisar el build localmente
 ```
 
-El build queda en `dist/`.
+El servidor de desarrollo abre `http://127.0.0.1:5173` y atiende tanto Vite como `/api/club`. Carga variables privadas desde `.env`. Sin esa configuración, muestra que falta activar el servidor.
 
-## Desplegar en Vercel
+`npm test` prueba permisos, PIN, sesiones, concurrencia de dorsales, cupo, votos, asistencia, cierre atómico de reconocimientos, equipo equilibrado y generación del diario con una base en memoria. No es una prueba contra el Firebase publicado.
 
-Opción A — CLI (la más rápida):
-
-```bash
-npm i -g vercel
-vercel login
-vercel        # deploy de prueba
-vercel --prod # deploy definitivo
-```
-
-Vercel detecta automáticamente que es un proyecto Vite (build command
-`vite build`, output `dist`), no hace falta configurar nada más.
-
-Opción B — Dashboard de Vercel:
-
-1. Subí esta carpeta a un repositorio de GitHub/GitLab/Bitbucket.
-2. En [vercel.com](https://vercel.com) → "Add New… → Project" → importá el repo.
-3. Framework Preset: "Vite" (se detecta solo). Deploy.
-4. Vercel te da un enlace (`https://tu-proyecto.vercel.app`) que podés abrir
-   directamente desde el navegador del celular — no hace falta instalar nada.
-
-## Notas
-
-- Los íconos son de [lucide-react](https://lucide.dev) y los gráficos de
-  [recharts](https://recharts.org), ambos ya declarados en `package.json`.
-- La tipografía usa Google Fonts (Rajdhani, Oswald, Bebas Neue) cargadas por
-  `@import` dentro de `App.jsx`, así que la primera carga necesita conexión
-  a internet para verse con esas fuentes (si no hay conexión, cae a las
-  fuentes del sistema).
+Las capturas de `docs/preview/` usan jugadores y partidos de prueba. La aplicación real no recibe esos datos.

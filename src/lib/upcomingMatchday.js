@@ -21,11 +21,8 @@ export async function saveUpcomingMatchday(storage, draft) {
 }
 
 export async function clearUpcomingMatchday(storage) {
-  try {
-    await storage.delete(STORAGE_KEY, true);
-  } catch (e) {
-    /* si ya no existía, no hay nada que hacer */
-  }
+  // The API makes deleting an absent draft idempotent. Other failures propagate.
+  await storage.delete(STORAGE_KEY, true);
 }
 
 // Arma el "partido" (sin estadísticas) que se le pasa al motor de misiones

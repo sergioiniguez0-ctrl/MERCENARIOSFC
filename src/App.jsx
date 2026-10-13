@@ -1,13 +1,16 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Trophy, Users, CalendarDays, Vote, TrendingUp, TrendingDown, Minus, Plus, X, Check, Lock, Shield,
   ChevronRight, Loader2, Shirt, Goal, Medal, Circle, Home, BarChart3, Settings,
-  Star, Crown, Target, Sparkles, ShieldCheck, Pencil, Trash2, LogOut, Flame, Clock, Award,
+  Star, Crown, Target, Sparkles, ShieldCheck, Pencil, Trash2, LogOut, Flame, Clock, Award, Newspaper, RefreshCw, UserRound,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
-import { verifyAdminCredentials } from "./lib/auth";
+import { clubApi } from "./lib/clubApi.js";
+import { MAX_PLAYERS, availableNumbers, displayName } from "./lib/playerProfile.js";
+import { NEW_AWARD_LABELS, RECOGNITIONS, awardBallotKey, ballotLeaders } from "./lib/recognitions.js";
+import { PlayerLogin, ProfileEditor, PinManagement, ChangePin, MatchPreview, RecognitionVoting, ProfileRecognitions, WeeklyJournal, RosterNumbersAudit } from "./components/ClubFeatures.jsx";
 import { computeMarketValue, formatMarketValue, formatMarketVariation } from "./lib/marketValue";
 import { computeCommitment } from "./lib/commitment";
 import { computePotreroPaths, POTRERO_PATHS_CONFIG } from "./lib/potreroPaths";
@@ -20,11 +23,11 @@ import { computeMatchRating } from "./lib/rating";
 // src/assets/avatars/ — se detecta solo, no hace falta tocar código. AVATAR_LIST
 // queda ordenado por nombre de archivo y AVATARS mapea "avatar_01" -> url de la
 // imagen para poder guardar solo el id en el jugador (liviano en Firestore).
-const AVATAR_MODULES = import.meta.glob("./assets/avatars/*.png", { eager: true, import: "default" });
+const AVATAR_MODULES = import.meta.glob("./assets/avatars/*.{png,svg}", { eager: true, import: "default" });
 const AVATAR_LIST = Object.keys(AVATAR_MODULES)
   .sort()
   .map((path) => {
-    const id = path.split("/").pop().replace(/\.png$/, "");
+    const id = path.split("/").pop().replace(/\.(png|svg)$/, "");
     return { id, url: AVATAR_MODULES[path] };
   });
 const AVATARS = Object.fromEntries(AVATAR_LIST.map((a) => [a.id, a.url]));
@@ -119,7 +122,7 @@ function isProtectedPlayer(player) {
 }
 // 1 voto MVP recibido = 0,1 puntos acumulados históricamente.
 const MVP_VOTE_POINT = 0.1;
-const MAX_PLAYERS = 30;
+
 const AWARD_INC = 0.5;
 const WIN_INC = 0.5;
 const GOAL_INC = 1;
@@ -132,6 +135,7 @@ const BASE_RATING = 6;
 const RATING_MIN = 2;
 const RATING_MAX = 10;
 const QUICK_AWARDS = [
+  ...NEW_AWARD_LABELS,
   "Mejor arquero",
   "Mejor defensa",
   "Mejor mediocampista",
@@ -760,179 +764,69 @@ export default function App() {
   const [profileId, setProfileId] = useState(null);
   const [voteDraft, setVoteDraft] = useState({});
   const [isAdmin, setIsAdmin] = useState(false);
+  const [session, setSession] = useState(null);
+  const [editingOwnProfile, setEditingOwnProfile] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [editingPlayerId, setEditingPlayerId] = useState(null);
   const [editingMatchId, setEditingMatchId] = useState(null);
   const [upcomingMatchday, setUpcomingMatchday] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      let loadedPlayers = [];
-      try {
-        const r = await window.storage.get("players", true);
-        loadedPlayers = r ? JSON.parse(r.value) : [];
-      } catch (e) {
-        loadedPlayers = [];
-      }
-      const existingNames = new Set(loadedPlayers.map((p) => p.name.trim().toLowerCase()));
-      const missingPlayers = SEED_PLAYERS.filter((p) => !existingNames.has(p.name.trim().toLowerCase()));
-      if (missingPlayers.length > 0) {
-        loadedPlayers = [...loadedPlayers, ...missingPlayers.map((p) => ({ id: "p" + p.number, number: p.number, name: p.name, position: p.position }))];
-      }
-      // Limpieza única: "Cristian 8" era un jugador placeholder de una seed anterior y
-      // ya no debe existir en el sistema (no es el jugador real "Cris 8", que sí se
-      // mantiene protegido). Si quedó cargado en Firestore, se elimina automáticamente.
-      const beforeCleanup = loadedPlayers.length;
-      loadedPlayers = loadedPlayers.filter((p) => normalizedPlayerName(p.name) !== "cristian 8");
-      // v3.1: ya NO se migra automáticamente la posición genérica (DEF/MED/DEL) a una
-      // posición específica al abrir la app. "MED" no siempre es "VOD", "DEL" no
-      // siempre es "DC", "DEF" no siempre es "DFC" — forzarlo sería inventar un dato
-      // que el administrador nunca cargó. Las posiciones genéricas quedan como
-      // válidas de compatibilidad (posGroup() y los coeficientes del Valor
-      // Mercenario en marketValue.js ya las reconocen y usan un coeficiente
-      // promedio del grupo) y el administrador puede afinar la posición de cada
-      // jugador, cuando quiera, desde "Editar jugador" — la app nunca la reescribe
-      // sola ni la guarda en Firestore por su cuenta.
-      // Asignación automática v3.0: todo jugador que todavía no tenga un avatar
-      // asignado (ni el nuevo avatarId ni el viejo avatarUrl) recibe uno del
-      // sprite sheet original, para que nadie se quede con el ícono genérico de
-      // silueta por posición. Es determinístico (mismo jugador → mismo avatar
-      // siempre) y el administrador puede cambiarlo cuando quiera desde "Editar
-      // jugador".
-      let avatarsAssigned = false;
-      if (AVATAR_LIST.length > 0) {
-        loadedPlayers = loadedPlayers.map((p, i) => {
-          if (!p.avatarId && !p.avatarUrl) {
-            avatarsAssigned = true;
-            return { ...p, avatarId: AVATAR_LIST[i % AVATAR_LIST.length].id };
-          }
-          return p;
-        });
-      }
-      if (missingPlayers.length > 0 || loadedPlayers.length !== beforeCleanup || avatarsAssigned) {
-        try {
-          await window.storage.set("players", JSON.stringify(loadedPlayers), true);
-        } catch (e) {}
-      }
-      setPlayers(loadedPlayers);
-      let loadedMatches = [];
-      try {
-        const r = await window.storage.get("matches", true);
-        loadedMatches = r ? JSON.parse(r.value) : [];
-      } catch (e) {
-        loadedMatches = [];
-      }
-      const existingMatchIds = new Set(loadedMatches.map((m) => m.id));
-      const missingMatches = SEED_MATCHES.filter((m) => !existingMatchIds.has(m.id));
-      let mutated = missingMatches.length > 0;
-      if (missingMatches.length > 0) {
-        // v3.0: ya no se cierra la votación de los partidos existentes acá tampoco
-        // (la votación nunca se cierra sola, solo con el botón del administrador).
-        loadedMatches = [...loadedMatches, ...missingMatches];
-      }
-      // v3.1: ídem que con el plantel — ya no se migra automáticamente la posición
-      // genérica con la que jugó cada participante en partidos ya cargados. El
-      // dato queda tal cual está guardado; "Jugó de" y los filtros ya reconocen
-      // tanto las posiciones específicas como las genéricas de compatibilidad.
-      // Corrección puntual: Zuko hizo 3 goles, no 2, en el partido del 20/07.
-      loadedMatches = loadedMatches.map((m) => {
-        if (m.id !== "m20260720") return m;
-        const fixedParticipants = m.participants.map((p) => {
-          if (p.playerId === "p17" && Number(p.goals) !== 3) {
-            mutated = true;
-            return { ...p, goals: 3 };
-          }
-          return p;
-        });
-        return { ...m, participants: fixedParticipants };
-      });
-      if (mutated) {
-        try {
-          await window.storage.set("matches", JSON.stringify(loadedMatches), true);
-        } catch (e) {}
-      }
-      setMatches(loadedMatches);
-      try {
-        const r = await window.storage.get("votes", true);
-        setVotes(r ? JSON.parse(r.value) : {});
-      } catch (e) {
-        setVotes({});
-      }
-      try {
-        const r = await window.storage.get("currentUserId", false);
-        if (r) setCurrentUserId(JSON.parse(r.value));
-        else setShowWho(true);
-      } catch (e) {
-        setShowWho(true);
-      }
-      try {
-        const r = await window.storage.get("adminSession", false);
-        if (r && JSON.parse(r.value) === true) setIsAdmin(true);
-      } catch (e) {
-        // sin sesión de administrador guardada, sigue como visitante
-      }
-      try {
-        const draft = await loadUpcomingMatchday(window.storage);
-        setUpcomingMatchday(draft);
-      } catch (e) {
-        setUpcomingMatchday(null);
-      }
-      setLoading(false);
-    })();
-  }, []);
-
-  async function savePlayers(next) {
-    setPlayers(next);
+  async function refreshClub() {
+    setSyncing(true);
     try {
-      await window.storage.set("players", JSON.stringify(next), true);
-    } catch (e) {
-      setError("No se pudo guardar. Probá de nuevo.");
-    }
+      const [pr, mr, vr, ur, sr] = await Promise.all([
+        window.storage.get("players", true), window.storage.get("matches", true),
+        window.storage.get("votes", true), window.storage.get("upcomingMatchday", true),
+        clubApi("session", {}, "GET"),
+      ]);
+      setPlayers(pr.value ? JSON.parse(pr.value) : []);
+      setMatches(mr.value ? JSON.parse(mr.value) : []);
+      setVotes(vr.value ? JSON.parse(vr.value) : {});
+      setUpcomingMatchday(ur.value ? JSON.parse(ur.value) : null);
+      setSession(sr.session);
+      setIsAdmin(sr.session?.role === "admin");
+      setCurrentUserId(sr.session?.role === "player" ? sr.session.playerId : null);
+      setError("");
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); setSyncing(false); }
   }
+  useEffect(() => {
+    refreshClub();
+    const id = setInterval(refreshClub, 45000);
+    const onVisible = () => { if (document.visibilityState === "visible") refreshClub(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
+  async function perform(action) { try { return await action(); } catch (e) { setError(e.message); } }
+
   async function saveMatches(next) {
+    await window.storage.set("matches", JSON.stringify(next), true);
     setMatches(next);
-    try {
-      await window.storage.set("matches", JSON.stringify(next), true);
-    } catch (e) {
-      setError("No se pudo guardar. Probá de nuevo.");
-    }
   }
   async function saveVotes(next) {
+    await window.storage.set("votes", JSON.stringify(next), true);
     setVotes(next);
-    try {
-      await window.storage.set("votes", JSON.stringify(next), true);
-    } catch (e) {
-      setError("No se pudo guardar. Probá de nuevo.");
-    }
   }
-  async function pickUser(id) {
-    setCurrentUserId(id);
-    setShowWho(false);
-    try {
-      await window.storage.set("currentUserId", JSON.stringify(id), false);
-    } catch (e) {}
+  async function pickUser(id, pin) {
+    const r = await clubApi("login", { playerId: id, pin });
+    setSession(r.session); setCurrentUserId(id); setIsAdmin(false); setShowWho(false);
+    setProfileId(id);
   }
-
   async function loginAdmin(user, pass) {
-    const ok = await verifyAdminCredentials(user, pass);
-    if (!ok) {
-      setLoginError("Usuario o contraseña incorrectos.");
-      return;
-    }
-    setIsAdmin(true);
-    setShowLogin(false);
-    setLoginError("");
     try {
-      await window.storage.set("adminSession", JSON.stringify(true), false);
-    } catch (e) {}
+      const r = await clubApi("adminLogin", { user, password: pass });
+      setSession(r.session); setIsAdmin(true); setCurrentUserId(null); setShowLogin(false); setLoginError("");
+      await refreshClub();
+    } catch (e) { setLoginError(e.message); }
   }
-
   async function logoutAdmin() {
-    setIsAdmin(false);
-    try {
-      await window.storage.delete("adminSession", false);
-    } catch (e) {}
+    await perform(async () => { await clubApi("logout"); setSession(null); setIsAdmin(false); setCurrentUserId(null); });
+  }
+  async function updateOwnProfile(profile) {
+    const r = await clubApi("profile", { profile });
+    setPlayers(JSON.parse(r.value));
   }
 
   // Solo F8/F9 generan estadísticas oficiales (ver isOfficialMode). F5/F6 quedan
@@ -1002,6 +896,8 @@ export default function App() {
     [players, totals]
   );
 
+
+  const previewPlayers = useMemo(() => players.map(p => ({ ...p, ...(ranking.find(r=>r.id===p.id)||{}), marketValue: computeMarketValue(p, players, matches, votes).current })), [players, ranking, matches, votes]);
   const currentPlayer = players.find((p) => p.id === currentUserId);
   const activeProfileId = profileId || currentUserId || (players[0] && players[0].id);
   const profilePlayer = players.find((p) => p.id === activeProfileId);
@@ -1035,62 +931,16 @@ export default function App() {
     return withPj.reduce((s, p) => s + p.avg, 0) / withPj.length;
   }, [ranking]);
 
-  async function addPlayer(data) {
-    if (!isAdmin) return;
-    if (players.length >= MAX_PLAYERS) {
-      setError("Ya hay 30 jugadores cargados.");
-      return;
-    }
-    const dorsal = Number(data.number);
-    const number = dorsal && !players.some((p) => p.number === dorsal) ? dorsal : nextNumber(players);
-    const defaultAvatarId = AVATAR_LIST.length > 0 ? AVATAR_LIST[players.length % AVATAR_LIST.length].id : undefined;
-    const p = {
-      id: "p" + Date.now(),
-      name: data.name.trim(),
-      position: data.position,
-      number,
-      avatarId: data.avatarId || defaultAvatarId,
-      age: data.age ? Number(data.age) : undefined,
-      dominantFoot: data.dominantFoot || undefined,
-    };
-    await savePlayers([...players, p]);
-    setShowAddPlayer(false);
+  async function addPlayer(profile) {
+    const r = await clubApi("addPlayer", { profile });
+    setPlayers(JSON.parse(r.value)); setShowAddPlayer(false);
   }
-
-  async function editPlayer(id, data) {
-    if (!isAdmin) return;
-    const dorsal = Number(data.number);
-    const dorsalTaken = dorsal && players.some((p) => p.id !== id && p.number === dorsal);
-    if (dorsalTaken) {
-      setError(`El dorsal #${dorsal} ya lo tiene otro jugador.`);
-      return;
-    }
-    await savePlayers(
-      players.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              name: data.name.trim(),
-              position: data.position,
-              number: dorsal || p.number,
-              avatarId: data.avatarId || undefined,
-              age: data.age ? Number(data.age) : undefined,
-              dominantFoot: data.dominantFoot || undefined,
-            }
-          : p
-      )
-    );
-    setEditingPlayerId(null);
+  async function editPlayer(id, profile) {
+    const r = await clubApi("profile", { playerId: id, profile });
+    setPlayers(JSON.parse(r.value)); setEditingPlayerId(null);
   }
-
   async function deletePlayer(id) {
-    if (!isAdmin) return;
-    const target = players.find((p) => p.id === id);
-    if (isProtectedPlayer(target)) {
-      setError('El jugador "Cris 8" no se puede eliminar.');
-      return;
-    }
-    await savePlayers(players.filter((p) => p.id !== id));
+    await perform(async () => { const r = await clubApi("deletePlayer", { playerId: id }); setPlayers(JSON.parse(r.value)); });
   }
 
   async function addMatch(form, linkUpcoming) {
@@ -1123,6 +973,7 @@ export default function App() {
   // borrador de convocatoria (sin confirmar todavía, se puede seguir editando).
   async function saveUpcomingDraft(draft) {
     if (!isAdmin) return;
+    if (draft.confirmed) return confirmUpcomingDraft(draft);
     await saveUpcomingMatchday(window.storage, draft);
     setUpcomingMatchday(draft);
   }
@@ -1133,7 +984,10 @@ export default function App() {
   // jugados, cerrados o sin esta confirmación explícita.
   async function confirmUpcomingDraft(draft) {
     if (!isAdmin) return;
+    if (upcomingMatchday?.confirmed && (draft.date !== upcomingMatchday.date || draft.mode !== upcomingMatchday.mode)) throw new Error("Para cambiar la fecha o modalidad, descartá la convocatoria y creá otra.");
     const confirmed = { ...draft, confirmed: true };
+    const removed = (upcomingMatchday?.convocadoIds || []).filter(id => !draft.convocadoIds.includes(id));
+    if (removed.length) await cancelAssignmentsForMatch(window.storage, draft.id, removed);
     await saveUpcomingMatchday(window.storage, confirmed);
     setUpcomingMatchday(confirmed);
     const shellMatch = draftAsShellMatch(confirmed, players);
@@ -1183,8 +1037,12 @@ export default function App() {
     // El ranking, el MVP y las estadísticas se recalculan solos: se derivan en vivo
     // de "matches" + "votes" (ver totals/ranking/statsLeaders más abajo), así que no
     // hace falta ningún paso extra acá aparte de guardar el estado de la votación.
-    const nextMatches = matches.map((m) => (m.id === matchId ? { ...m, votingOpen: false } : m));
-    await saveMatches(nextMatches);
+    const result = await clubApi("closeVoting", { matchId });
+    const nextMatches = JSON.parse(result.value);
+    setMatches(nextMatches);
+    const latestVotes = await window.storage.get("votes", true);
+    const closedVotes = latestVotes.value ? JSON.parse(latestVotes.value) : {};
+    setVotes(closedVotes);
 
     // v3.8: recién ACÁ, con la votación ya cerrada y los votos ya cargados, se
     // evalúan (una sola vez, de forma idempotente — evaluateAssignment no toca
@@ -1196,7 +1054,7 @@ export default function App() {
       const officialNow = onlyOfficialMatches(nextMatches);
       for (const playerId of closedMatch.missionPlayerIds) {
         try {
-          await evaluateAssignment({ storage: window.storage, matchId, playerId, allOfficialMatches: officialNow, votes });
+          await evaluateAssignment({ storage: window.storage, matchId, playerId, allOfficialMatches: officialNow, votes: closedVotes });
         } catch (e) {
           // No bloquea el cierre de votación por un error puntual de misiones.
         }
@@ -1209,18 +1067,13 @@ export default function App() {
     // v3.8: reabrir la votación NUNCA vuelve a evaluar ni modifica misiones ya
     // procesadas — acá no se llama a `evaluateAssignment` bajo ninguna
     // circunstancia. Las que quedaron "completed" o "expired" siguen así.
-    await saveMatches(matches.map((m) => (m.id === matchId ? { ...m, votingOpen: true } : m)));
+    const result = await clubApi("reopenVoting", { matchId });
+    setMatches(JSON.parse(result.value));
   }
 
   async function submitVote(matchId, mvpId) {
-    if (!currentUserId) {
-      setShowWho(true);
-      return;
-    }
-    const current = votes[matchId] || {};
-    if (current[currentUserId]) return;
-    const next = { ...votes, [matchId]: { ...current, [currentUserId]: mvpId } };
-    await saveVotes(next);
+    if (!currentUserId) { setShowWho(true); return; }
+    await perform(async () => { const r = await clubApi("vote", { matchId, candidate: mvpId }); setVotes(JSON.parse(r.value)); });
   }
 
   if (loading) {
@@ -1240,7 +1093,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: "#0a0c10", minHeight: "100vh", fontFamily: "'Rajdhani', system-ui, sans-serif" }} className="text-gray-200 pb-24">
+    <div style={{ background: "#0a0c10", minHeight: "100vh", fontFamily: "'Rajdhani', system-ui, sans-serif" }} className="mercenarios-app text-gray-200 pb-24">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Oswald:wght@500;600;700&family=Bebas+Neue&display=swap');
         .disp { font-family: 'Oswald', system-ui, sans-serif; }
@@ -1271,7 +1124,7 @@ export default function App() {
         className="sticky top-0 z-20 border-b border-gray-800"
         style={{ background: "linear-gradient(180deg, #0c0f14f2, #0c0f14e6)", backdropFilter: "blur(10px)" }}
       >
-        <div className="flex items-center justify-between px-4 py-3">
+        <div className="app-header-inner flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2.5">
             <div
               className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
@@ -1285,12 +1138,13 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button aria-label="Actualizar datos" onClick={refreshClub} disabled={syncing} className="w-8 h-8 flex items-center justify-center"><RefreshCw size={16} className={syncing ? "animate-spin" : ""} /></button>
             <button
-              onClick={() => setShowWho(true)}
+              onClick={() => currentUserId ? (setProfileId(currentUserId), setTab("perfil")) : setShowWho(true)}
               className="text-xs px-3 py-1.5 rounded-full border border-gray-700 flex items-center gap-1.5"
               style={{ background: "rgba(255,255,255,0.04)", color: "#6fa0ff" }}
             >
-              <Shield size={13} /> {currentPlayer ? currentPlayer.name.split(" ")[0] : "Elegí quién sos"}
+              <Shield size={13} /> {currentPlayer ? displayName(currentPlayer).split(" ")[0] : "Ingresar"}
             </button>
             <button
               onClick={() => setTab("configuracion")}
@@ -1315,9 +1169,20 @@ export default function App() {
         </div>
       )}
 
-      <main className="px-4 pt-4 max-w-xl mx-auto">
+      <main className="app-main px-4 pt-4 max-w-xl mx-auto">
+        <div className="club-section-links" aria-label="Secciones del club">
+          <button aria-pressed={tab === "previa"} onClick={() => setTab("previa")}><CalendarDays size={16} /> Previa</button>
+          <button aria-pressed={tab === "diario"} onClick={() => setTab("diario")}><Newspaper size={16} /> Diario</button>
+          <button aria-pressed={tab === "perfil" && profileId === currentUserId} onClick={() => { if (currentUserId) { setProfileId(currentUserId); setTab("perfil"); } else setShowWho(true); }}><UserRound size={16} /> Mi perfil</button>
+        </div>
+        {tab === "previa" && <MatchPreview players={previewPlayers} draft={upcomingMatchday} matches={matches} isAdmin={isAdmin} currentUserId={currentUserId} onSave={saveUpcomingDraft} onConfirm={confirmUpcomingDraft} onDiscard={discardUpcomingDraft} Avatar={PlayerAvatar} onLogin={() => setShowWho(true)} />}
+        {tab === "diario" && <WeeklyJournal players={players} matches={matches} votes={votes} draft={upcomingMatchday} onPreview={() => setTab("previa")} />}
+
         {tab === "inicio" && (
-          <HomeTab
+          <><div className="weekly-hub">
+            <button onClick={() => setTab("previa")}><span className="club-eyebrow">PRÓXIMA FECHA</span><strong>{upcomingMatchday ? upcomingMatchday.date : "¿Cuándo volvemos a jugar?"}</strong><span>{upcomingMatchday ? `${upcomingMatchday.convocadoIds.length} convocados · mirá los equipos y confirmá si vas` : "La convocatoria y los equipos, en un solo lugar"}</span><CalendarDays size={20}/></button>
+            <button onClick={() => setTab("diario")}><span className="club-eyebrow">DIARIO MERCENARIOS</span><strong>La semana del grupo</strong><span>Resultados, protagonistas y lo que viene</span><Newspaper size={20}/></button>
+          </div><HomeTab
             players={players}
             matches={matches}
             votes={votes}
@@ -1331,7 +1196,7 @@ export default function App() {
             onGoRanking={() => setTab("ranking")}
             onGoPartidos={() => setTab("partidos")}
             onOpenProfile={(id) => { setProfileId(id); setTab("perfil"); }}
-          />
+          /></>
         )}
         {tab === "ranking" && (
           <RankingTab
@@ -1352,11 +1217,12 @@ export default function App() {
             isAdmin={isAdmin}
             onAdd={() => setShowAddMatch(true)}
             onVote={submitVote}
-            onCloseVoting={closeVoting}
-            onReopenVoting={reopenVoting}
+            onLogin={() => setShowWho(true)}
+            onCloseVoting={(id) => perform(() => closeVoting(id))}
+            onReopenVoting={(id) => perform(() => reopenVoting(id))}
             onEdit={(id) => setEditingMatchId(id)}
             onDelete={(id) => {
-              if (window.confirm("¿Borrar este partido? Esta acción no se puede deshacer.")) deleteMatch(id);
+              if (window.confirm("¿Borrar este partido? Esta acción no se puede deshacer.")) perform(() => deleteMatch(id));
             }}
           />
         )}
@@ -1395,6 +1261,8 @@ export default function App() {
             onSaveUpcoming={saveUpcomingDraft}
             onConfirmUpcoming={confirmUpcomingDraft}
             onDiscardUpcoming={discardUpcomingDraft}
+            onGoPreview={() => setTab("previa")}
+            onRefresh={refreshClub}
           />
         )}
         {tab === "perfil" && (
@@ -1404,6 +1272,9 @@ export default function App() {
             setProfileId={setProfileId}
             totals={totals}
             history={profileHistory}
+            canEdit={!!currentUserId && currentUserId === profilePlayer?.id}
+            onEdit={() => setEditingOwnProfile(true)}
+            isOwn={!!currentUserId && currentUserId === profilePlayer?.id}
             onBack={() => setTab("ranking")}
             totalMatches={matches.length}
             matches={matches}
@@ -1413,7 +1284,8 @@ export default function App() {
       </main>
 
       <nav
-        className="fixed bottom-0 left-0 right-0 border-t border-gray-800 grid grid-cols-6 z-20"
+        aria-label="Navegación principal"
+        className="app-nav fixed bottom-0 left-0 right-0 border-t border-gray-800 grid grid-cols-6 z-20"
         style={{ background: "#0b0d11f5", backdropFilter: "blur(12px)" }}
       >
         {[
@@ -1428,41 +1300,21 @@ export default function App() {
           return (
             <button
               key={key}
+              aria-current={active ? "page" : undefined}
               onClick={() => setTab(key)}
               className="flex flex-col items-center justify-center py-2.5 gap-0.5 relative"
               style={{ color: active ? "#0D6EFD" : "#6b7280" }}
             >
               {active && <span className="absolute top-0 w-8 h-0.5 rounded-full" style={{ background: "#0D6EFD" }} />}
               <Icon size={18} strokeWidth={active ? 2.4 : 2} />
-              <span className="text-[9px] disp tracking-wide">{label}</span>
+              <span className="text-[11px] disp tracking-wide">{label}</span>
             </button>
           );
         })}
       </nav>
 
-      {showWho && (
-        <Modal onClose={() => currentUserId && setShowWho(false)} title="¿Quién sos?">
-          <p className="text-xs text-gray-500 mb-3">Elegí tu nombre para poder votar y ver tu evolución. Se guarda solo en este dispositivo.</p>
-          <div className="max-h-72 overflow-y-auto flex flex-col gap-1.5">
-            {players.length === 0 && <p className="text-sm text-gray-500">Todavía no hay jugadores cargados.</p>}
-            {players.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => pickUser(p.id)}
-                className="flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-800 hover:border-blue-700/60 text-left transition-colors"
-                style={{ background: "rgba(255,255,255,0.03)" }}
-              >
-                <div className="relative shrink-0">
-                  <PlayerAvatar player={p} ring="#0D6EFD" size={34} />
-                  <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 14, height: 14, fontSize: 7, background: "#0b0d11", border: "1.5px solid #0D6EFD", color: "#6fa0ff" }}>{p.number}</span>
-                </div>
-                <span className="text-sm text-gray-200">{p.name}</span>
-                <span className="text-[10px] text-gray-500 ml-auto">{posLabel(p.position)}</span>
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
+      {showWho && <PlayerLogin players={players} onLogin={pickUser} onClose={() => setShowWho(false)} Modal={Modal} session={session} onLogout={async () => { await logoutAdmin(); setShowWho(false); }} />}
+      {editingOwnProfile && currentPlayer && <ProfileEditor player={currentPlayer} players={players} avatars={AVATAR_LIST} Avatar={PlayerAvatar} Modal={Modal} onClose={() => setEditingOwnProfile(false)} onSave={updateOwnProfile} />}
 
       {showLogin && (
         <LoginModal
@@ -1472,17 +1324,8 @@ export default function App() {
         />
       )}
 
-      {showAddPlayer && isAdmin && (
-        <AddPlayerModal onClose={() => setShowAddPlayer(false)} onSave={addPlayer} count={players.length} />
-      )}
-      {editingPlayerId && isAdmin && (
-        <AddPlayerModal
-          onClose={() => setEditingPlayerId(null)}
-          onSave={(data) => editPlayer(editingPlayerId, data)}
-          count={players.length}
-          initial={players.find((p) => p.id === editingPlayerId)}
-        />
-      )}
+      {showAddPlayer && isAdmin && <ProfileEditor player={{name: "", number: availableNumbers(players)[0], position: "VOD", avatarId: AVATAR_LIST[players.length % AVATAR_LIST.length]?.id}} players={players} avatars={AVATAR_LIST} Avatar={PlayerAvatar} Modal={Modal} isAdmin onClose={() => setShowAddPlayer(false)} onSave={addPlayer} />}
+      {editingPlayerId && isAdmin && <ProfileEditor key={editingPlayerId} player={players.find(p=>p.id===editingPlayerId)} players={players} avatars={AVATAR_LIST} Avatar={PlayerAvatar} Modal={Modal} isAdmin onClose={() => setEditingPlayerId(null)} onSave={data=>editPlayer(editingPlayerId,data)} />}
       {showAddMatch && isAdmin && (
         <AddMatchModal onClose={() => setShowAddMatch(false)} onSave={addMatch} players={players} upcomingMatchday={upcomingMatchday} />
       )}
@@ -1499,18 +1342,36 @@ export default function App() {
 }
 
 function Modal({ onClose, title, children }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose); closeRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement, oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusables = () => [...(dialogRef.current?.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]') || [])];
+    const id = requestAnimationFrame(() => focusables()[0]?.focus());
+    function keydown(e) {
+      if (e.key === "Escape") { e.preventDefault(); closeRef.current(); }
+      if (e.key !== "Tab") return;
+      const elements = focusables(), first = elements[0], last = elements[elements.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !dialogRef.current?.contains(document.activeElement))) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+    document.addEventListener("keydown", keydown);
+    return () => { cancelAnimationFrame(id); document.body.style.overflow = oldOverflow; document.removeEventListener("keydown", keydown); if (previous?.isConnected) previous.focus(); };
+  }, []);
   return (
     <div
       className="fixed inset-0 z-30 flex items-end sm:items-center justify-center px-0 sm:px-4"
       style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
     >
       <div
+        ref={dialogRef} role="dialog" aria-modal="true" aria-label={title}
         className="rounded-t-3xl sm:rounded-3xl w-full sm:max-w-md max-h-[85vh] overflow-y-auto border border-gray-800"
         style={{ background: "#0d1015", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)" }}
       >
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 sticky top-0" style={{ background: "#0d1015" }}>
           <h3 className="disp text-white text-base tracking-wide">{title}</h3>
-          <button onClick={onClose} className="text-gray-500"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Cerrar ventana" className="text-gray-500 p-2"><X size={18} /></button>
         </div>
         <div className="p-4">{children}</div>
       </div>
@@ -1534,11 +1395,12 @@ function LoginModal({ onClose, onLogin, error }) {
     <Modal onClose={onClose} title="Acceso administrador">
       <div className="flex flex-col gap-3">
         <p className="text-xs text-gray-500 leading-snug">
-          Solo el administrador puede cargar y editar jugadores, partidos y resultados. El resto del grupo sigue viendo todo sin iniciar sesión.
+          El administrador carga jugadores, partidos y resultados. Cada jugador personaliza su propio perfil con su PIN. Las estadísticas se pueden consultar sin ingresar.
         </p>
         <div>
           <label className="text-[11px] text-gray-500">Usuario</label>
           <input
+            aria-label="Usuario administrador"
             value={user}
             onChange={(e) => setUser(e.target.value)}
             autoComplete="username"
@@ -1549,6 +1411,7 @@ function LoginModal({ onClose, onLogin, error }) {
           <label className="text-[11px] text-gray-500">Contraseña</label>
           <input
             type="password"
+            aria-label="Contraseña administrador"
             value={pass}
             onChange={(e) => setPass(e.target.value)}
             autoComplete="current-password"
@@ -1604,7 +1467,7 @@ function HomeTab({
   return (
     <div>
       <div
-        className="relative rounded-[24px] overflow-hidden mb-5 border border-gray-800"
+        className="club-hero relative rounded-[24px] overflow-hidden mb-5 border border-gray-800"
         style={{ background: "radial-gradient(120% 140% at 50% -10%, rgba(13,110,253,0.35), rgba(11,11,11,0) 60%), linear-gradient(180deg, #10151c 0%, #0b0d11 100%)" }}
       >
         <div
@@ -1615,18 +1478,18 @@ function HomeTab({
           className="absolute -top-16 -right-16 w-56 h-56 rounded-full pointer-events-none"
           style={{ background: "radial-gradient(circle, rgba(255,213,79,0.25), transparent 70%)", filter: "blur(10px)" }}
         />
-        <div className="relative px-5 pt-8 pb-6 flex flex-col items-center text-center">
+        <div className="hero-content relative px-5 pt-8 pb-6 flex flex-col items-center text-center">
           <div
             className="w-20 h-20 rounded-full flex items-center justify-center mb-3"
             style={{
               background: "linear-gradient(145deg, #12161d, #05070a)",
               border: "2px solid #0D6EFD",
-              animation: "pulse-glow 3s ease-in-out infinite",
+              
             }}
           >
             <ClubLogo size={40} />
           </div>
-          <h1 className="disp text-3xl text-white tracking-wide leading-none">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></h1>
+          <div className="hero-title"><p className="hero-eyebrow">EL FÚTBOL DEL GRUPO</p><h1 className="disp text-3xl text-white tracking-wide leading-none">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></h1><p className="hero-description">Cada fecha cuenta.</p></div>
           <span className="mt-2 text-[11px] tracking-[0.2em] text-gray-400 disp uppercase px-3 py-1 rounded-full border border-gray-700 bg-black/30">{season}</span>
 
           <div className="grid grid-cols-3 gap-2 w-full mt-6">
@@ -1683,7 +1546,7 @@ function HomeTab({
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-[9px] text-gray-500 uppercase tracking-wider">Jugador del mes</div>
-            <div className="disp text-white text-sm truncate">{playerOfMonth.p.name}</div>
+            <div className="disp text-white text-sm truncate">{displayName(playerOfMonth.p)}</div>
             <div className="text-[10px] text-gray-500">{playerOfMonth.pj} partidos en los últimos 30 días</div>
           </div>
           <div className="disp text-xl shrink-0" style={{ color: "#FFD54F" }}>{playerOfMonth.avg.toFixed(1)}</div>
@@ -1706,7 +1569,7 @@ function HomeTab({
               >
                 <span className="text-sm">{["🥇", "🥈", "🥉"][i]}</span>
                 <span className="jersey mt-1" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
-                <span className="text-[10px] text-white truncate w-full mt-1 disp">{p.name.split(" ")[0]}</span>
+                <span className="text-[10px] text-white truncate w-full mt-1 disp">{displayName(p).split(" ")[0]}</span>
                 <span className="disp text-xs font-bold rounded-md px-1.5 mt-1" style={{ color: "#0b0b0b", background: ratingColor(p.avg) }}>{p.pj > 0 ? p.avg.toFixed(1) : "—"}</span>
               </button>
             ))}
@@ -1959,7 +1822,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
             <div className="col-span-1 disp font-semibold text-gray-500">{quickTab === "general" && posFilter === "ALL" ? i + 4 : i + 1}</div>
             <div className="col-span-4 flex items-center gap-2 min-w-0">
               <span className="jersey" style={{ width: 28, height: 28, fontSize: 11 }}>{p.number}</span>
-              <span className="text-sm text-gray-200 truncate">{p.name}</span>
+              <span className="text-sm text-gray-200 truncate">{displayName(p)}</span>
               {quickTab === "general" && p.pj > 0 && (p.confidence || 0) < 100 && (
                 <span
                   className="text-[8px] shrink-0 px-1 py-0.5 rounded-full disp"
@@ -2023,7 +1886,7 @@ function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-sm text-gray-200 truncate">{p.name}</span>
+            <span className="text-sm text-gray-200 truncate">{displayName(p)}</span>
             {isNew && <span className="text-[8px] shrink-0 px-1.5 py-0.5 rounded-full disp uppercase tracking-wide" style={{ background: "#00C85322", color: "#00C853" }}>Nuevo</span>}
             {streak >= 2 && <span className="text-[8px] shrink-0 px-1.5 py-0.5 rounded-full disp uppercase tracking-wide flex items-center gap-0.5" style={{ background: "#EF444422", color: "#EF4444" }}><Flame size={9} /> Racha</span>}
           </div>
@@ -2086,7 +1949,7 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return enriched.filter((x) => (posFilter === "ALL" || x.p.position === posFilter) && (!q || x.p.name.toLowerCase().includes(q)));
+    return enriched.filter((x) => (posFilter === "ALL" || x.p.position === posFilter) && (!q || `${x.p.name} ${x.p.nickname || ""}`.toLowerCase().includes(q)));
   }, [enriched, search, posFilter]);
 
   const sorter = (a, b) => {
@@ -2103,7 +1966,7 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="disp text-white text-2xl tracking-wide">Jugadores <span className="text-gray-500 text-base">({players.length}/{MAX_PLAYERS})</span></h2>
-        {isAdmin && (
+        {isAdmin && players.length < MAX_PLAYERS && (
           <button
             onClick={onAdd}
             className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
@@ -2175,125 +2038,6 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
   );
 }
 
-function AddPlayerModal({ onClose, onSave, count, initial }) {
-  const isEdit = !!initial;
-  const [name, setName] = useState(initial?.name || "");
-  const [position, setPosition] = useState(initial?.position || "VOD");
-  const [number, setNumber] = useState(initial?.number ?? "");
-  const [avatarId, setAvatarId] = useState(initial?.avatarId || "");
-  const [age, setAge] = useState(initial?.age ?? "");
-  const [dominantFoot, setDominantFoot] = useState(initial?.dominantFoot || "");
-
-  function handleSave() {
-    onSave({ name, position, number, avatarId, age, dominantFoot });
-  }
-
-  return (
-    <Modal onClose={onClose} title={isEdit ? "Editar jugador" : "Sumar jugador"}>
-      {!isEdit && count >= MAX_PLAYERS ? (
-        <p className="text-sm text-red-400">Ya están los 30 jugadores cargados.</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="text-[11px] text-gray-500">Avatar</label>
-            <div className="grid grid-cols-5 gap-2 mt-1 max-h-40 overflow-y-auto p-1 rounded-xl border border-gray-800" style={{ background: "rgba(255,255,255,0.02)" }}>
-              {AVATAR_LIST.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => setAvatarId(avatarId === a.id ? "" : a.id)}
-                  className="rounded-full overflow-hidden flex items-center justify-center aspect-square"
-                  style={{
-                    background: "linear-gradient(160deg,#161b22,#05070a)",
-                    border: avatarId === a.id ? "2px solid #0D6EFD" : "2px solid #1f2937",
-                  }}
-                  title={a.id}
-                >
-                  <img src={a.url} alt={a.id} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
-                </button>
-              ))}
-            </div>
-            {AVATAR_LIST.length === 0 && <p className="text-[10px] text-gray-600 mt-1">Todavía no hay avatares cargados.</p>}
-          </div>
-          <div>
-            <label className="text-[11px] text-gray-500">Nombre</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ej: Franco Díaz"
-              className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[11px] text-gray-500">Dorsal</label>
-              <input
-                type="number"
-                min="1"
-                max={MAX_PLAYERS}
-                value={number}
-                onChange={(e) => setNumber(e.target.value)}
-                placeholder="Automático"
-                className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] text-gray-500">Edad</label>
-              <input
-                type="number"
-                min="0"
-                max="99"
-                value={age}
-                onChange={(e) => setAge(e.target.value)}
-                placeholder="No especificado"
-                className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-[11px] text-gray-500">Posición</label>
-            <div className="grid grid-cols-2 gap-2 mt-1">
-              {POSITIONS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setPosition(p.id)}
-                  className="text-xs py-2 rounded-xl border"
-                  style={position === p.id ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="text-[11px] text-gray-500">Pie dominante</label>
-            <div className="grid grid-cols-3 gap-2 mt-1">
-              {DOMINANT_FOOT_OPTIONS.map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setDominantFoot(dominantFoot === f ? "" : f)}
-                  className="text-xs py-2 rounded-xl border"
-                  style={dominantFoot === f ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          </div>
-          <button
-            disabled={!name.trim()}
-            onClick={handleSave}
-            className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
-            style={name.trim() ? { background: "#0D6EFD" } : {}}
-          >
-            {isEdit ? "Guardar cambios" : "Guardar jugador"}
-          </button>
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) {
   const isEdit = !!initial;
   const canLinkUpcoming = !isEdit && !!upcomingMatchday && upcomingMatchday.confirmed;
@@ -2302,17 +2046,30 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
   const [mode, setMode] = useState(initial?.mode || (canLinkUpcoming ? upcomingMatchday.mode : MODES[0]));
   const [teamAName, setTeamAName] = useState(initial?.teamAName || "Equipo A");
   const [teamBName, setTeamBName] = useState(initial?.teamBName || "Equipo B");
-  const [rows, setRows] = useState(initial?.participants || []);
+  const previewRows = canLinkUpcoming ? ["A", "B"].flatMap(team => (upcomingMatchday.teams?.[team] || []).map(id => ({ playerId: id, position: players.find(p=>p.id===id)?.position || "VOD", team, goals: 0, assists: 0, ownGoals: 0 }))) : [];
+  const [rows, setRows] = useState(initial?.participants || previewRows);
   const [awards, setAwards] = useState(initial?.awards || []);
   const [awardLabel, setAwardLabel] = useState("");
   const [awardPlayers, setAwardPlayers] = useState([]);
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function submitMatch() {
+    setSaveError(""); setSaving(true);
+    try {
+      if (!date || new Set(rows.map(r=>r.playerId)).size !== rows.length) throw new Error("Revisá la fecha y los jugadores duplicados.");
+      if (!rows.some(r=>r.team==="A") || !rows.some(r=>r.team==="B")) throw new Error("Cargá al menos un jugador por equipo.");
+      const participants = rows.map(r=>({...r, goals: Number(r.goals)||0, assists: Number(r.assists)||0, ownGoals: Number(r.ownGoals)||0}));
+      if (participants.some(r=>[r.goals,r.assists,r.ownGoals].some(n=>!Number.isInteger(n)||n<0))) throw new Error("Goles y asistencias deben ser enteros positivos o cero.");
+      await onSave({date, mode, teamAName, teamBName, participants, awards}, linkUpcoming);
+    } catch(e) { setSaveError(e.message); } finally { setSaving(false); }
+  }
 
   function toggleAwardPlayer(id) {
     setAwardPlayers((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
   function addAward() {
     if (!awardLabel.trim() || awardPlayers.length === 0) return;
-    setAwards([...awards, ...awardPlayers.map((pid) => ({ label: awardLabel.trim(), playerId: pid }))]);
+    setAwards([...awards, ...awardPlayers.filter(pid=>!awards.some(a=>a.label===awardLabel.trim()&&a.playerId===pid)).map((pid) => ({ label: awardLabel.trim(), playerId: pid, ...(NEW_AWARD_LABELS.includes(awardLabel.trim()) ? {countsForRating: false} : {}) }))]);
     setAwardLabel("");
     setAwardPlayers([]);
   }
@@ -2329,7 +2086,9 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
     setRows(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
   function removeRow(i) {
+    const removed = rows[i]?.playerId;
     setRows(rows.filter((_, idx) => idx !== i));
+    setAwards(awards.filter(a=>a.playerId!==removed));
   }
 
   return (
@@ -2460,19 +2219,20 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
           </div>
         </div>
 
+        {saveError && <p role="alert" className="club-error">{saveError}</p>}
         {canLinkUpcoming && (
           <label className="flex items-start gap-2 text-xs text-gray-300 rounded-xl border border-gray-800 p-2.5 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
             <input type="checkbox" className="mt-0.5" checked={linkUpcoming} onChange={(e) => setLinkUpcoming(e.target.checked)} />
             <span>
-              Vincular con la convocatoria pendiente del {upcomingMatchday.date} ({upcomingMatchday.mode}) y evaluar ahora las misiones
+              Vincular con la convocatoria pendiente del {upcomingMatchday.date} ({upcomingMatchday.mode}). Al cerrar la votación se evalúan las misiones
               secretas ya asignadas a esos convocados.
             </span>
           </label>
         )}
 
         <button
-          disabled={rows.length === 0}
-          onClick={() => onSave({ date, mode, teamAName, teamBName, participants: rows, awards }, linkUpcoming)}
+          disabled={rows.length === 0 || saving}
+          onClick={submitMatch}
           className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
           style={rows.length > 0 ? { background: "#0D6EFD" } : {}}
         >
@@ -2483,7 +2243,7 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
   );
 }
 
-function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete }) {
+function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete, onLogin }) {
   const sorted = [...matches].sort((a, b) => new Date(b.date) - new Date(a.date));
   return (
     <div>
@@ -2510,6 +2270,7 @@ function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, o
             currentUserId={currentUserId}
             isAdmin={isAdmin}
             onVote={onVote}
+            onLogin={onLogin}
             onCloseVoting={onCloseVoting}
             onReopenVoting={onReopenVoting}
             onEdit={() => onEdit(m.id)}
@@ -2521,7 +2282,7 @@ function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, o
   );
 }
 
-function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete }) {
+function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseVoting, onReopenVoting, onEdit, onDelete, onLogin }) {
   const [showTeam, setShowTeam] = useState(false);
   const teamAGoals = teamGoalsFor(m, "A");
   const teamBGoals = teamGoalsFor(m, "B");
@@ -2584,7 +2345,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
         {mvpPlayer && (
           <div className="flex items-center gap-2 rounded-xl px-3 py-2 mb-2.5 border" style={{ borderColor: "#FFD54F55", background: "#FFD54F14" }}>
             <Crown size={14} style={{ color: "#FFD54F" }} />
-            <span className="text-xs text-gray-300">Figura del partido: <span className="disp" style={{ color: "#FFD54F" }}>{mvpPlayer.name}</span></span>
+            <span className="text-xs text-gray-300">Figura del partido: <span className="disp" style={{ color: "#FFD54F" }}>{displayName(mvpPlayer)}</span></span>
           </div>
         )}
 
@@ -2593,13 +2354,13 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
             {scorers.length > 0 && (
               <div className="flex items-start gap-2 text-[11px]">
                 <Goal size={13} style={{ color: "#0D6EFD" }} className="mt-0.5 shrink-0" />
-                <span className="text-gray-400 flex-1">{scorers.map((s) => `${s.pl?.name}${s.goals > 1 ? ` (${s.goals})` : ""}`).join(", ")}</span>
+                <span className="text-gray-400 flex-1">{scorers.map((s) => `${displayName(s.pl)}${s.goals > 1 ? ` (${s.goals})` : ""}`).join(", ")}</span>
               </div>
             )}
             {assisters.length > 0 && (
               <div className="flex items-start gap-2 text-[11px]">
                 <Target size={13} style={{ color: "#00C853" }} className="mt-0.5 shrink-0" />
-                <span className="text-gray-400 flex-1">{assisters.map((s) => `${s.pl?.name}${s.assists > 1 ? ` (${s.assists})` : ""}`).join(", ")}</span>
+                <span className="text-gray-400 flex-1">{assisters.map((s) => `${displayName(s.pl)}${s.assists > 1 ? ` (${s.assists})` : ""}`).join(", ")}</span>
               </div>
             )}
             {carded.length > 0 && (
@@ -2667,6 +2428,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
           )}
         </div>
 
+        <RecognitionVoting match={m} players={players} currentUserId={currentUserId} onLogin={onLogin} />
         <div className="border-t border-gray-900 pt-2.5 mt-2.5">
           <button onClick={() => setShowTeam((v) => !v)} className="text-xs flex items-center gap-1 disp tracking-wide" style={{ color: "#0D6EFD" }}>
             <Shirt size={13} /> Equipo de la Fecha ({formationLabel(m.mode)}) {showTeam ? "▲" : "▼"}
@@ -2695,7 +2457,7 @@ function TeamOfMatch({ team }) {
             {arr && arr.map((pl) => (
               <div key={pl.playerId} className="flex flex-col items-center w-16">
                 <span className="jersey" style={{ width: 32, height: 32, fontSize: 12 }}>{pl.number}</span>
-                <span className="text-[9px] text-gray-300 truncate w-full text-center mt-0.5">{pl.name}</span>
+                <span className="text-[9px] text-gray-300 truncate w-full text-center mt-0.5">{displayName(pl)}</span>
                 <span className="text-[9px] disp" style={{ color: ratingColor(pl.rating) }}>{pl.rating.toFixed(1)}</span>
               </div>
             ))}
@@ -2713,7 +2475,7 @@ function VoteRow({ match, players, onVote }) {
     <div className="flex items-center gap-2">
       <select value={sel} onChange={(e) => setSel(e.target.value)} className="flex-1 bg-gray-900/70 border border-gray-800 rounded-xl px-2 py-1.5 text-xs text-gray-200">
         <option value="">Elegí la figura del partido</option>
-        {options.map((p) => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}
+        {options.map((p) => <option key={p.id} value={p.id}>#{p.number} {displayName(p)}</option>)}
       </select>
       <button
         disabled={!sel}
@@ -2800,7 +2562,7 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
   );
 }
 
-function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmin, onLogin, onLogout, upcomingMatchday, onSaveUpcoming, onConfirmUpcoming, onDiscardUpcoming }) {
+function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmin, onLogin, onLogout, upcomingMatchday, onGoPreview, onRefresh }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -2856,7 +2618,7 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
               <Lock size={14} className="text-gray-500" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-gray-300">Solo el administrador puede editar</div>
+              <div className="text-sm text-gray-300">Administración deportiva</div>
               <div className="text-[10px] text-gray-500">Iniciá sesión para cargar jugadores y partidos</div>
             </div>
             <button onClick={onLogin} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#0D6EFD" }}>Ingresar</button>
@@ -2865,7 +2627,7 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
       </div>
 
       {isAdmin && (
-        <UpcomingMatchdayCard players={players} draft={upcomingMatchday} onSave={onSaveUpcoming} onConfirm={onConfirmUpcoming} onDiscard={onDiscardUpcoming} />
+        <><section className="club-panel"><h3>La próxima fecha</h3><p className="club-muted">Armá los equipos, equilibrá el nivel y publicá la convocatoria.</p><button className="club-primary" onClick={onGoPreview}>Administrar previa</button></section><PinManagement players={players} /><RosterNumbersAudit players={players} onUpdated={onRefresh}/></>
       )}
 
       <div className="rounded-2xl border border-gray-800 p-4" style={{ background: "rgba(255,255,255,0.03)" }}>
@@ -2878,73 +2640,6 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
 }
 
 /* ---------- Próxima fecha: convocatoria mínima + asignación de misiones secretas ---------- */
-
-function UpcomingMatchdayCard({ players, draft, onSave, onConfirm, onDiscard }) {
-  const [date, setDate] = useState(draft?.date || new Date().toISOString().slice(0, 10));
-  const [mode, setMode] = useState(draft?.mode || "Fútbol 8");
-  const [convocadoIds, setConvocadoIds] = useState(draft?.convocadoIds || []);
-
-  function toggle(id) {
-    setConvocadoIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }
-
-  if (draft && draft.confirmed) {
-    return (
-      <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
-        <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Próxima fecha — convocatoria confirmada</div>
-        <div className="text-sm text-gray-300">{draft.date} · {draft.mode} · {draft.convocadoIds.length} convocados</div>
-        <div className="text-[10px] text-gray-500 mt-1">Ya se asignó una misión secreta a cada convocado. Cargá el resultado desde "Partidos" marcando la opción de vincular con esta convocatoria.</div>
-        <button onClick={onDiscard} className="mt-3 text-xs px-3 py-1.5 rounded-full text-gray-300 border border-gray-700">Descartar convocatoria</button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
-      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Próxima fecha</div>
-      <div className="text-[10px] text-gray-500 mb-3">Fecha, modalidad y convocados — todavía sin capitanes, presupuesto ni equipos.</div>
-      <div className="grid grid-cols-2 gap-2 mb-3">
-        <div>
-          <label className="text-[10px] text-gray-500">Fecha</label>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white" />
-        </div>
-        <div>
-          <label className="text-[10px] text-gray-500">Modalidad</label>
-          <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white">
-            <option>Fútbol 8</option>
-            <option>Fútbol 9</option>
-          </select>
-        </div>
-      </div>
-      <div className="text-[10px] text-gray-500 mb-1">Convocados ({convocadoIds.length})</div>
-      <div className="flex flex-wrap gap-1.5 mb-3 max-h-40 overflow-y-auto">
-        {players.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => toggle(p.id)}
-            className="text-[11px] px-2.5 py-1 rounded-full border"
-            style={convocadoIds.includes(p.id) ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "white" } : { borderColor: "#374151", color: "#9ca3af" }}
-          >
-            {p.name}
-          </button>
-        ))}
-      </div>
-      <div className="flex gap-2">
-        <button onClick={() => onSave({ id: draft?.id || "u" + Date.now(), date, mode, convocadoIds, confirmed: false })} className="text-xs px-3 py-1.5 rounded-full text-gray-300 border border-gray-700" disabled={convocadoIds.length === 0}>
-          Guardar borrador
-        </button>
-        <button
-          onClick={() => onConfirm({ id: draft?.id || "u" + Date.now(), date, mode, convocadoIds, confirmed: false })}
-          disabled={convocadoIds.length === 0}
-          className="text-xs px-3 py-1.5 rounded-full text-white disabled:bg-gray-800 disabled:text-gray-600"
-          style={convocadoIds.length > 0 ? { background: "#0D6EFD" } : {}}
-        >
-          Confirmar y asignar misiones
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /* ---------- Avatares por posición (silueta de acción, sin foto todavía) ---------- */
 
@@ -3033,7 +2728,7 @@ function PlayerCard({ player, players, t, matches, votes, isMvpLeader }) {
   const variationColor = mv.lastVariation > 0 ? "#00C853" : mv.lastVariation < 0 ? "#FF5252" : "#9ca3af";
 
   return (
-    <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
+    <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: player.profileColor ? `linear-gradient(150deg, ${player.profileColor}55, #10151f 75%)` : meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
       <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-30 pointer-events-none" style={{ background: `radial-gradient(circle, ${meta.ring}, transparent 70%)`, filter: "blur(6px)" }} />
 
       <div className="relative flex items-start justify-between">
@@ -3062,7 +2757,8 @@ function PlayerCard({ player, players, t, matches, votes, isMvpLeader }) {
           <PlayerAvatar player={player} ring={meta.ring} size={78} />
           <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 26, height: 26, fontSize: 11, background: "#0b0d11", border: `1.5px solid ${meta.ring}`, color: meta.ring }}>{player.number}</span>
         </div>
-        <div className="disp text-white text-base mt-2">{player.name}</div>
+        <div className="disp text-white text-base mt-2">{displayName(player)}</div>
+        {player.bio && <p className="club-muted text-center mt-1">{player.bio}</p>}
         <div className="text-[10px] text-gray-400">{posLabel(player.position)}</div>
         <div className="mt-1.5"><TrendChip trend={trend} /></div>
       </div>
@@ -3245,8 +2941,10 @@ function SecretMissionsPanel({ player }) {
   );
 }
 
-function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, matches, votes }) {
+function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBack, matches, votes, canEdit, onEdit, isOwn }) {
   const [section, setSection] = useState("carta");
+  const mv = useMemo(() => profilePlayer ? computeMarketValue(profilePlayer, players, matches, votes) : {current:null, history:[], lastVariation:0}, [profilePlayer, players, matches, votes]);
+  const commitment = useMemo(() => profilePlayer ? computeCommitment(profilePlayer, matches) : {}, [profilePlayer, matches]);
 
   if (!profilePlayer) {
     return <p className="text-sm text-gray-500">Sumá jugadores para ver perfiles.</p>;
@@ -3262,19 +2960,17 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
   const { list: achievements } = computeAchievements(profilePlayer, matches, votes);
   const unlockedCount = achievements.filter((a) => a.unlocked).length;
   const { weeksInTeam } = computeLevel(t, matches, profilePlayer, unlockedCount);
-  const mv = useMemo(() => computeMarketValue(profilePlayer, players, matches, votes), [profilePlayer, players, matches, votes]);
-  const commitment = useMemo(() => computeCommitment(profilePlayer, matches), [profilePlayer, matches]);
 
   return (
     <div>
-      <button onClick={onBack} className="text-xs text-gray-500 mb-2 flex items-center gap-1">← Volver</button>
+      <div className="club-row mb-3"><button onClick={onBack} className="text-xs text-gray-500 flex items-center gap-1">← Volver</button>{canEdit && <button className="club-primary" onClick={onEdit}><Pencil size={14} /> Editar mi perfil</button>}</div>
 
       <select
         value={profilePlayer.id}
         onChange={(e) => setProfileId(e.target.value)}
         className="w-full mb-3 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200"
       >
-        {players.map((p) => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}
+        {players.map((p) => <option key={p.id} value={p.id}>#{p.number} {displayName(p)}</option>)}
       </select>
 
       <div className="flex gap-1.5 mb-4 overflow-x-auto">
@@ -3293,9 +2989,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
         })}
       </div>
 
-      {section === "carta" && (
-        <PlayerCard player={profilePlayer} players={players} t={t} matches={matches} votes={votes} isMvpLeader={isMvpLeader} />
-      )}
+      {section === "carta" && (<><PlayerCard player={profilePlayer} players={players} t={t} matches={matches} votes={votes} isMvpLeader={isMvpLeader} /><div className="mt-4"><ProfileRecognitions player={profilePlayer} matches={matches}/></div></>)}
 
       {section === "evolucion" && (
         <div>
@@ -3325,7 +3019,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
               </div>
             </div>
             <div className="mt-3">
-              <div className="disp text-white text-2xl leading-tight">{profilePlayer.name}</div>
+              <div className="disp text-white text-2xl leading-tight">{displayName(profilePlayer)}</div>
               <div className="text-xs text-gray-400">{posLabel(profilePlayer.position)} · {meta.emoji} {meta.label}</div>
             </div>
             <div className="mt-2"><TrendChip trend={trend} /></div>
@@ -3447,6 +3141,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
 
       {section === "info" && (
         <div>
+          {isOwn && <ChangePin />}
           <div className="flex flex-col items-center mb-4">
             <PlayerAvatar player={profilePlayer} ring={meta.ring} size={88} />
           </div>
@@ -3454,6 +3149,9 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
           <div className="rounded-2xl border border-gray-800 p-4 flex flex-col gap-3" style={{ background: "rgba(255,255,255,0.03)" }}>
             {[
               ["Nombre", profilePlayer.name],
+              ["Apodo", profilePlayer.nickname || "Sin especificar"],
+              ["Posición secundaria", posLabel(profilePlayer.secondaryPosition) || "Sin especificar"],
+              ["Frase", profilePlayer.bio || "Sin especificar"],
               ["Dorsal", `#${profilePlayer.number}`],
               ["Posición", posLabel(profilePlayer.position)],
               ["Edad", profilePlayer.age ? `${profilePlayer.age} años` : "No especificado"],

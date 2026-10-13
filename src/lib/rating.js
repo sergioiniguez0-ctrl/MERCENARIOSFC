@@ -1,3 +1,4 @@
+import { isScoringAward } from "./recognitions.js";
 // ---------- Puntaje por partido (v3.3) ----------
 // Es la MISMA función que usa App.jsx para calcular la Nota/Promedio: se movió acá,
 // sin cambiar ni un número de su lógica, únicamente para poder importarla también
@@ -45,7 +46,7 @@ export function computeMatchRating(match, playerId, mvpVotes) {
   rating += cleanSheet ? RATING_CONFIG.CLEAN_SHEET_INC : 0;
   rating += win ? RATING_CONFIG.WIN_INC : 0;
   rating += Math.min(votes, RATING_CONFIG.VOTE_CAP) * RATING_CONFIG.VOTE_INC;
-  rating += awards.length * RATING_CONFIG.AWARD_INC;
+  rating += awards.filter(isScoringAward).length * RATING_CONFIG.AWARD_INC;
   rating -= ownGoals * RATING_CONFIG.OWN_GOAL_DEC;
   rating = Math.min(RATING_CONFIG.MAX, Math.max(RATING_CONFIG.MIN, rating));
 

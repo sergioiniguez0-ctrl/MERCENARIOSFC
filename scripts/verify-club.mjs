@@ -18,6 +18,17 @@ class FakeRef{constructor(db,path){this.db=db;this.path=path;}collection(n){retu
 class FakeCollection{constructor(db,path){this.db=db;this.path=path;}doc(id){return new FakeRef(this.db,this.path+'/'+id);}async get(){return {docs:[...this.db.docs].filter(([p])=>p.startsWith(this.path+'/')&&p.slice(this.path.length+1).indexOf('/')===-1).map(([p,v])=>({id:p.slice(this.path.length+1),data:()=>structuredClone(v)}))};}}
 function store(db,key,data){db.docs.set('mercenarios/shared/storage/'+key,{value:JSON.stringify(data),revision:0});}
 const roster=[{id:'p1',name:'Uno',number:1,position:'ARQ',avatarId:'avatar_01'},{id:'p2',name:'Dos',number:2,position:'DFC',avatarId:'avatar_02'},{id:'p3',name:'Tres',number:3,position:'DC',avatarId:'avatar_03'}];
+test('custom avatars persist through the profile API; invalid IDs remain rejected',async()=>{
+ const {handler}=await fixture();
+ for(const avatarId of ['boca-20','river-20','racing-20','san-lorenzo-20','independiente-20','poses-17','ropa-variada-18','avatar_01','potrero_48']){
+  const r=await request(handler,'profile',{profile:{avatarId}},'p1');
+  assert.equal(r.code,200,avatarId);
+  assert.equal(JSON.parse(r.body.value).find(p=>p.id==='p1').avatarId,avatarId);
+ }
+ for(const avatarId of ['boca-21','poses-18','ropa-variada-19','../../other','unknown']){
+  assert.equal((await request(handler,'profile',{profile:{avatarId}},'p1')).code,400,avatarId);
+ }
+});
 async function fixture(){const db=new FakeDb();store(db,'players',roster);await db.collection('clubCredentials').doc('p1').set({...await hashPin('012345'),version:1});await db.collection('clubCredentials').doc('p2').set({...await hashPin('123456'),version:1});const handler=createClubHandler({db,env,now:()=>1000000});return {db,handler};}
 const cookie=role=>`club_session=${signSession(role==='admin'?{role:'admin'}:{role:'player',playerId:role,version:1},env.CLUB_SESSION_SECRET,1000000)}`;
 async function request(handler,action,data={},who=null,method='POST'){
@@ -44,3 +55,39 @@ test('closing awards is atomic, remains non-scoring, and reopening keeps legacy 
 test('changing a PIN rotates sessions and requires current PIN',async()=>{const {handler}=await fixture();assert.equal((await request(handler,'changePin',{oldPin:'000000',newPin:'111111'},'p1')).code,401);assert.equal((await request(handler,'changePin',{oldPin:'012345',newPin:'111111'},'p1')).code,200);assert.equal((await request(handler,'session',{},'p1','GET')).body.session,null);assert.equal((await request(handler,'login',{playerId:'p1',pin:'111111'})).code,200);});
 
 test('legacy dorsal repair is admin-only, reviewable, and preserves IDs',async()=>{const {handler,db}=await fixture();store(db,'players',[...roster,{id:'legacy',name:'Legacy',number:2,position:'DC'}]);assert.equal((await request(handler,'repairNumbers',{confirm:false},'p1')).code,403);const proposal=await request(handler,'repairNumbers',{confirm:false},'admin');assert.equal(proposal.body.changes.length,1);assert.equal(proposal.body.changes[0].number,4);const applied=await request(handler,'repairNumbers',{confirm:true,revision:proposal.body.revision},'admin');assert.equal(applied.code,200);assert.deepEqual(JSON.parse(applied.body.value).map(p=>p.id),['p1','p2','p3','legacy']);assert.equal(new Set(JSON.parse(applied.body.value).map(p=>p.number)).size,4);});
+
+test('magazine drafts stay private; only admin writes; stale revisions are rejected',async()=>{
+ const {handler,db}=await fixture();
+ const edition={id:'e1',status:'draft',title:'Zuko por duplicado',deck:'Dos goles.',body:'Una crónica.\n\nSegundo párrafo.',protagonist:'Zuko',date:'2026-10-11',number:'1',matchId:'',notes:[]};
+ store(db,'magazine',[edition]);
+ assert.deepEqual(JSON.parse((await request(handler,'get',{key:'magazine'},null,'GET')).body.value),[]);
+ assert.equal(JSON.parse((await request(handler,'get',{key:'magazine'},'admin','GET')).body.value).length,1);
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([edition]),revision:0},'p1')).code,403);
+ const published={...edition,status:'published'};
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([published]),revision:0},'admin')).code,200);
+ assert.equal(JSON.parse((await request(handler,'get',{key:'magazine'},null,'GET')).body.value)[0].title,edition.title);
+ assert.equal((await request(handler,'set',{key:'magazine',value:'[]',revision:0},'admin')).code,409);
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([{...published,protagonist:''}]),revision:1},'admin')).code,400);
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([edition]),revision:1},'admin')).code,200);
+ assert.deepEqual(JSON.parse((await request(handler,'get',{key:'magazine'},null,'GET')).body.value),[]);
+});
+test('editorial paste preserves paragraphs and rejects ambiguous packages',async()=>{
+ const {parseEditorial}=await import('../src/lib/magazine.js');
+ const parsed=parseEditorial('TITULAR: Zuko por duplicado\nBAJADA: Dos goles\nPROTAGONISTA: Zuko\nCRÓNICA:\nPrimer párrafo.\n\nSegundo párrafo.');
+ assert.equal(parsed.body,'Primer párrafo.\n\nSegundo párrafo.');
+ assert.equal(parsed.protagonist,'Zuko');
+ assert.throws(()=>parseEditorial('TITULAR: A\nTITULAR: B\nCRÓNICA: C'));
+ assert.throws(()=>parseEditorial('Solo un texto'));
+});
+test('publishing an edition and changing an avatar preserve each other and match data',async()=>{
+ const {handler,db}=await fixture();
+ store(db,'matches',[]);
+ const edition={id:'combined',status:'published',title:'Sergio al frente',deck:'La figura.',body:'La crónica completa.',protagonist:'Sergio',date:'2026-10-14',number:'1',matchId:'',notes:[]};
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([edition]),revision:0},'admin')).code,200);
+ assert.equal((await request(handler,'profile',{profile:{avatarId:'racing-08'}},'p1')).code,200);
+ assert.equal(JSON.parse((await request(handler,'get',{key:'magazine'},null,'GET')).body.value)[0].title,edition.title);
+ const next={...edition,title:'Sergio se queda con la tapa'};
+ assert.equal((await request(handler,'set',{key:'magazine',value:JSON.stringify([next]),revision:1},'admin')).code,200);
+ assert.equal(JSON.parse((await request(handler,'get',{key:'players'},null,'GET')).body.value)[0].avatarId,'racing-08');
+ assert.deepEqual(JSON.parse((await request(handler,'get',{key:'matches'},null,'GET')).body.value),[]);
+});

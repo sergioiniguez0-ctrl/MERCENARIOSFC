@@ -1,9 +1,10 @@
+import { AVATAR_IDS } from './avatarCatalog.js';
+export { AVATAR_IDS } from './avatarCatalog.js';
 export const MAX_PLAYERS = 50;
 export const MAX_DORSAL = 99;
 export const PROFILE_COLORS = ['#0D6EFD', '#922b45', '#15803d', '#7c3aed', '#b45309', '#475569'];
 export const PROFILE_POSITIONS = ['ARQ', 'DFC', 'LAT', 'VOD', 'VOF', 'DC', 'EXT', 'DEF', 'MED', 'DEL'];
 export const PROFILE_FIELDS = ['nickname', 'age', 'number', 'avatarId', 'position', 'secondaryPosition', 'dominantFoot', 'bio', 'profileColor'];
-export const AVATAR_IDS = [...Array.from({length:15}, (_,i)=>`avatar_${String(i+1).padStart(2,'0')}`), ...Array.from({length:48}, (_,i)=>`potrero_${String(i+1).padStart(2,'0')}`)];
 export function availableNumbers(players, playerId) {
   const used = new Set(players.filter(p=>p.id!==playerId).map(p=>Number(p.number)));
   return Array.from({length:MAX_DORSAL},(_,i)=>i+1).filter(n=>!used.has(n));

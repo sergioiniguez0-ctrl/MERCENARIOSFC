@@ -3,7 +3,8 @@ import {hashPin,verifyPin,validPin,constantEqual,signSession,readSession} from '
 import {normalizeProfile,assertRoster,MAX_PLAYERS,availableNumbers,repairRosterNumbers} from '../src/lib/playerProfile.js';
 import {validatePreview} from '../src/lib/teamBalancer.js';
 import {RECOGNITIONS,eligibleForAward,awardBallotKey,ballotLeaders} from '../src/lib/recognitions.js';
-const PUBLIC_KEYS=['players','matches','votes','upcomingMatchday'];
+import {validateEditions} from '../src/lib/magazine.js';
+const PUBLIC_KEYS=['players','matches','votes','upcomingMatchday','magazine'];
 const MISSION_PREFIX='missionAssignment:';
 const error=(message,status=400)=>Object.assign(new Error(message),{status});
 const safeKey=key=>typeof key==='string'&&/^[a-zA-Z0-9_:-]{1,180}$/.test(key);
@@ -162,7 +163,7 @@ export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
     });return res.status(200).json(result);
    }
    if(action==='get'){
-    const key=req.query.key;accessKey(key,s);const snap=await storage.doc(key).get();return res.status(200).json({key,value:snap.exists?snap.data().value:null,revision:revision(snap),shared:true});
+    const key=req.query.key;accessKey(key,s);const snap=await storage.doc(key).get();let value=snap.exists?snap.data().value:null;if(key==='magazine'&&s?.role!=='admin'&&value)value=JSON.stringify(JSON.parse(value).filter(e=>e.status==='published'));return res.status(200).json({key,value,revision:revision(snap),shared:true});
    }
    if(action==='list'){
     const prefix=req.query.prefix||'';
@@ -178,6 +179,7 @@ export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
      await storage.doc(key).delete();return res.status(200).json({key,deleted:true});
     }
     const value=JSON.parse(body.value);
+    if(key==='magazine')validateEditions(value);
     if(key==='upcomingMatchday')validatePreview(value,parse(await storage.doc('players').get())||[],!!value.confirmed);
     if(key==='matches'){
      if(!Array.isArray(value))throw error('Partidos inválidos.');

@@ -1,3 +1,4 @@
+import AvatarPicker from './AvatarPicker.jsx';
 import React,{useState,useEffect,useMemo} from 'react';
 import {CalendarDays,Newspaper,Shuffle,Check,Lock,ArrowRightLeft,UserRound,KeyRound,RefreshCw,Award} from 'lucide-react';
 import {clubApi} from '../lib/clubApi.js';
@@ -43,7 +44,7 @@ export function ProfileEditor({player,players,avatars,Avatar,Modal,onClose,onSav
  <label>Pierna hábil<select aria-label="Pierna hábil" className={field} value={draft.dominantFoot} onChange={e=>patch('dominantFoot',e.target.value)}>{['','Derecho','Izquierdo','Ambidiestro'].map(f=><option value={f} key={f}>{f||'Sin especificar'}</option>)}</select></label>
  <label>Frase personal<textarea aria-label="Frase personal" className={field} maxLength={120} rows={2} value={draft.bio} onChange={e=>patch('bio',e.target.value)}/><span className="club-muted">{draft.bio.length}/120</span></label>
  <fieldset><legend>Color del perfil</legend><div className="club-colors">{PROFILE_COLORS.map((c,i)=><button key={c} type="button" aria-label={`Color ${i+1}`} aria-pressed={draft.profileColor===c} style={{background:c}} onClick={()=>patch('profileColor',c)}>{draft.profileColor===c&&<Check size={18}/>}</button>)}</div></fieldset>
- <fieldset><legend>Avatar · {avatars.length} opciones</legend><div className="club-avatars">{avatars.map(a=><button key={a.id} type="button" aria-label={`Avatar ${a.id}`} aria-pressed={draft.avatarId===a.id} onClick={()=>patch('avatarId',a.id)}><img src={a.url} alt="" loading="lazy"/></button>)}</div></fieldset>
+ <AvatarPicker avatars={avatars} value={draft.avatarId} onChange={id=>patch('avatarId',id)}/>
  {error&&<p role="alert" className="club-error">{error}</p>}<button className="club-primary" disabled={busy}>{busy?'Guardando…':'Guardar perfil'}</button>
  </form></Modal>;
 }

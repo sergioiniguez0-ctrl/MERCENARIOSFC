@@ -1,3 +1,4 @@
+import { Magazine } from './components/Magazine.jsx';
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Trophy, Users, CalendarDays, Vote, TrendingUp, TrendingDown, Minus, Plus, X, Check, Lock, Shield,
@@ -18,18 +19,18 @@ import { assignMissionIfNeeded, evaluateAssignment, cancelAssignmentsForMatch, g
 import { loadUpcomingMatchday, saveUpcomingMatchday, clearUpcomingMatchday, draftAsShellMatch } from "./lib/upcomingMatchday";
 import { computeMatchRating } from "./lib/rating";
 
-// ---------- Biblioteca de avatares Pixel Art (v3.0) ----------
-// Para agregar un avatar nuevo alcanza con soltar el PNG (fondo transparente) en
-// src/assets/avatars/ — se detecta solo, no hace falta tocar código. AVATAR_LIST
-// queda ordenado por nombre de archivo y AVATARS mapea "avatar_01" -> url de la
-// imagen para poder guardar solo el id en el jugador (liviano en Firestore).
+import { CUSTOM_AVATARS } from "./lib/avatarCatalog.js";
+
+// ---------- Biblioteca de avatares ----------
+// Las imágenes nuevas se sirven como archivos independientes; solo se guarda avatarId.
 const AVATAR_MODULES = import.meta.glob("./assets/avatars/*.{png,svg}", { eager: true, import: "default" });
-const AVATAR_LIST = Object.keys(AVATAR_MODULES)
+const LEGACY_AVATAR_LIST = Object.keys(AVATAR_MODULES)
   .sort()
   .map((path) => {
     const id = path.split("/").pop().replace(/\.(png|svg)$/, "");
     return { id, url: AVATAR_MODULES[path] };
   });
+const AVATAR_LIST = [...LEGACY_AVATAR_LIST, ...CUSTOM_AVATARS.map(a => ({ ...a, url: `${import.meta.env.BASE_URL}avatars/${a.path}` }))];
 const AVATARS = Object.fromEntries(AVATAR_LIST.map((a) => [a.id, a.url]));
 
 // ---------- Posiciones (v3.0) ----------
@@ -1172,16 +1173,16 @@ export default function App() {
       <main className="app-main px-4 pt-4 max-w-xl mx-auto">
         <div className="club-section-links" aria-label="Secciones del club">
           <button aria-pressed={tab === "previa"} onClick={() => setTab("previa")}><CalendarDays size={16} /> Previa</button>
-          <button aria-pressed={tab === "diario"} onClick={() => setTab("diario")}><Newspaper size={16} /> Diario</button>
+          <button aria-pressed={tab === "diario"} onClick={() => setTab("diario")}><Newspaper size={16} /> Revista</button>
           <button aria-pressed={tab === "perfil" && profileId === currentUserId} onClick={() => { if (currentUserId) { setProfileId(currentUserId); setTab("perfil"); } else setShowWho(true); }}><UserRound size={16} /> Mi perfil</button>
         </div>
         {tab === "previa" && <MatchPreview players={previewPlayers} draft={upcomingMatchday} matches={matches} isAdmin={isAdmin} currentUserId={currentUserId} onSave={saveUpcomingDraft} onConfirm={confirmUpcomingDraft} onDiscard={discardUpcomingDraft} Avatar={PlayerAvatar} onLogin={() => setShowWho(true)} />}
-        {tab === "diario" && <WeeklyJournal players={players} matches={matches} votes={votes} draft={upcomingMatchday} onPreview={() => setTab("previa")} />}
+        {tab === "diario" && <Magazine isAdmin={isAdmin} players={players} matches={matches} votes={votes} draft={upcomingMatchday} onPreview={() => setTab("previa")} />}
 
         {tab === "inicio" && (
           <><div className="weekly-hub">
             <button onClick={() => setTab("previa")}><span className="club-eyebrow">PRÓXIMA FECHA</span><strong>{upcomingMatchday ? upcomingMatchday.date : "¿Cuándo volvemos a jugar?"}</strong><span>{upcomingMatchday ? `${upcomingMatchday.convocadoIds.length} convocados · mirá los equipos y confirmá si vas` : "La convocatoria y los equipos, en un solo lugar"}</span><CalendarDays size={20}/></button>
-            <button onClick={() => setTab("diario")}><span className="club-eyebrow">DIARIO MERCENARIOS</span><strong>La semana del grupo</strong><span>Resultados, protagonistas y lo que viene</span><Newspaper size={20}/></button>
+            <button onClick={() => setTab("diario")}><span className="club-eyebrow">CÓDIGO MERCENARIO</span><strong>La revista del grupo</strong><span>Crónicas, protagonistas e historias</span><Newspaper size={20}/></button>
           </div><HomeTab
             players={players}
             matches={matches}

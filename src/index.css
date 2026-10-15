@@ -86,6 +86,20 @@ body {
 .club-avatars button { aspect-ratio:1; border-radius:14px; border:2px solid #2b384c; background:#1b2534; padding:4px; }
 .club-avatars button[aria-pressed=true] { border-color:#80b3ff; background:#214072; }
 .club-avatars img { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; }
+.avatar-picker { min-width:0; }
+.avatar-categories { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+.avatar-categories button { padding:8px 10px; border:1px solid #35445c; border-radius:10px; background:#172232; color:#dce5f2; font-size:13px; }
+.avatar-categories button[aria-pressed=true] { background:#214072; border-color:#80b3ff; }
+.avatar-picker .club-avatars { grid-template-columns:repeat(4,minmax(0,1fr)); max-height:360px; }
+.avatar-picker .club-avatars button { position:relative; min-width:0; }
+.avatar-picker .club-avatars span { position:absolute; right:4px; bottom:2px; font-size:11px; color:#cbd5e1; }
+.avatar-shirts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:14px 0; }
+.avatar-shirts button { display:flex; flex-direction:column; align-items:center; min-width:0; padding:6px; border:2px solid #2b384c; border-radius:12px; background:#1b2534; color:#dce5f2; }
+.avatar-shirts button[aria-pressed=true] { border-color:#80b3ff; background:#214072; }
+.avatar-shirts img { width:72px; height:72px; max-width:100%; object-fit:contain; image-rendering:pixelated; }
+.avatar-shirts span { font-size:12px; text-align:center; }
+.avatar-more { margin:10px 0; }
+@media(min-width:640px) { .avatar-picker .club-avatars { grid-template-columns:repeat(5,minmax(0,1fr)); } .avatar-shirts { grid-template-columns:repeat(5,minmax(0,1fr)); } }
 .pin-result { text-align:center; background:#223b28; border:1px solid #487552; border-radius:14px; padding:20px; }
 .pin-result strong { color:#b1f9c1; letter-spacing:.3em; font-size:28px; }
 .pin-result p { font-size:12px; color:#b9d7c2; }
@@ -140,3 +154,6 @@ body {
 .app-header-inner > div:first-child .disp { white-space:nowrap; font-size:13px; }
 .app-header-inner > div:first-child .text-\[10px\] { white-space:nowrap; font-size:10px; }
 .app-header-inner button.text-xs { padding-inline:8px; }
+
+/* Código Mercenario: revista tipográfica, sin imágenes */
+.magazine-archive{flex:1;min-width:0}.magazine label{display:grid;gap:6px}.magazine details summary{cursor:pointer;font-weight:600}.cm-cover,.cm-reading{background:#f4f0e7;color:#172b41;border:1px solid #d6cfbf;border-radius:14px;padding:clamp(20px,5vw,42px)}.cm-cover header{text-align:center;border-bottom:2px solid #172b41;padding-bottom:18px;display:grid;gap:10px}.cm-cover header strong{font-family:Georgia,serif;font-weight:900;font-size:clamp(30px,8vw,64px);line-height:.95;letter-spacing:-1px}.cm-cover header span{font-size:11px;letter-spacing:2px}.cm-cover header small{font-size:12px}.cm-kicker{color:#873344;font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;margin:24px 0 12px}.cm-cover h1{font-family:Georgia,serif;font-size:clamp(34px,7vw,64px);line-height:1.06;font-weight:800;overflow-wrap:anywhere;margin:0 0 18px}.cm-deck{font-family:Georgia,serif;font-size:clamp(18px,4vw,24px);line-height:1.5;white-space:pre-line}.cm-score{border-block:1px solid #873344;margin:22px 0;padding:14px 0;text-align:center;font-weight:800;font-size:20px}.cm-teasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:18px;margin:24px 0}.cm-teasers button{text-align:left;padding:12px 0;border-top:1px solid #b4aa9b}.cm-teasers span{display:block;color:#873344;font-size:11px;text-transform:uppercase}.cm-teasers strong{font-family:Georgia,serif;font-size:22px;display:block;overflow-wrap:anywhere}.cm-cover>.club-primary{width:100%;background:#873344}.cm-reading article{max-width:680px;margin:0 auto 32px;scroll-margin-top:20px}.cm-reading h2{font-family:Georgia,serif;font-size:clamp(28px,6vw,42px);line-height:1.15;overflow-wrap:anywhere}.cm-reading article>p:not(.cm-kicker){font-family:Georgia,serif;font-size:18px;line-height:1.8;margin:18px 0;overflow-wrap:anywhere}.cm-facts{border-top:2px solid #873344;padding-top:20px;font-size:16px;line-height:1.7;overflow-wrap:anywhere}.cm-facts ul{list-style:disc;padding-left:20px}.magazine .club-input{width:100%;min-width:0}.magazine textarea{resize:vertical}.magazine .club-actions{flex-wrap:wrap}

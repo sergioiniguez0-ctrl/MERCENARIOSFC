@@ -11,7 +11,7 @@ export function availableNumbers(players, playerId) {
 }
 export function normalizeProfile(input, players, id, {admin=false}={}) {
   const out = {};
-  const allowed = admin ? [...PROFILE_FIELDS, 'name'] : PROFILE_FIELDS;
+  const allowed = admin ? [...PROFILE_FIELDS, 'name'] : PROFILE_FIELDS.filter(key=>key!=='bio');
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error('Ese campo no se puede editar desde el perfil.');
   }
@@ -19,8 +19,8 @@ export function normalizeProfile(input, players, id, {admin=false}={}) {
     if (typeof input.name!=='string' || !input.name.trim() || input.name.trim().length>60) throw new Error('El nombre debe tener entre 1 y 60 caracteres.');
     out.name = input.name.trim();
   }
-  for (const [key,max] of [['nickname',24],['bio',120]]) if (key in input) {
-    if (typeof input[key]!=='string' || input[key].trim().length>max) throw new Error(`${key==='bio'?'La frase':'El apodo'} admite hasta ${max} caracteres.`);
+  for (const [key,max] of [['nickname',24],['bio',300]]) if (key in input) {
+    if (typeof input[key]!=='string' || input[key].trim().length>max) throw new Error(`${key==='bio'?'La descripción':'El apodo'} admite hasta ${max} caracteres.`);
     out[key]=input[key].trim();
   }
   if ('number' in input) {

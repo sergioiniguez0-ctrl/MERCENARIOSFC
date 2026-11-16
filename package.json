@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test scripts/verify-club.mjs",
-    "verify:legacy": "node scripts/verify-rating.mjs && node scripts/verify-market-value.mjs && node scripts/verify-commitment.mjs && node scripts/verify-potrero-paths.mjs && node scripts/verify-secret-missions-engine.mjs && node scripts/verify-secret-missions-store.mjs"
+    "verify:legacy": "node scripts/verify-rating.mjs && node scripts/verify-market-value.mjs && node scripts/verify-commitment.mjs && node scripts/verify-potrero-paths.mjs && node scripts/verify-secret-missions-engine.mjs && node scripts/verify-secret-missions-store.mjs",
+    "verify:upgrade": "node scripts/verify-upgrade.mjs",
+    "verify:missions": "node scripts/verify-easy-missions.mjs"
   },
   "dependencies": {
     "firebase-admin": "^14.5.0",

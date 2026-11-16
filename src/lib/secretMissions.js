@@ -22,9 +22,10 @@
 // - Se reescribieron los textos que atribuían acciones no registradas
 //   ("ganó gracias a lo suyo", "puso el cuerpo atrás"): ahora todas las
 //   descripciones y textos de revelación usan solo datos que la app guarda.
+import { computeMatchRating } from "./rating.js";
 import { isOfficialMode, posGroupOf, teamGoalsFor } from "./sportsConfig.js";
 
-export const MISSIONS_CATALOG_VERSION = "v3.6";
+export const MISSIONS_CATALOG_VERSION = "v4-easy";
 
 // ---------- Tipos de condición (el "motor") ----------
 export const MISSION_TYPES = {
@@ -83,6 +84,7 @@ export function buildSquadFacts(allOfficial, playerId, votes) {
       cleanSheet: (group === "ARQ" || group === "DEF") && rivalGoals === 0,
       awardsCount: (match.awards || []).filter((a) => a.playerId === playerId).length,
       votes: votes && votes[match.id] ? Object.values(votes[match.id]).filter((v) => v === playerId).length : 0,
+      performance: computeMatchRating(match, playerId, votes?.[match.id]).performance,
       group,
     };
   });
@@ -237,3 +239,23 @@ export const SECRET_MISSIONS = [
 export function isMissionWellFormed(mission) {
   return typeof CHECKERS[mission.type] === "function" && typeof mission.id === "string" && typeof mission.name === "string";
 }
+
+// Catálogo activo. Los 50 registros antiguos se conservan solo para compatibilidad
+// con asignaciones históricas: nunca se eligen para una nueva convocatoria.
+export const EASY_SECRET_MISSIONS = [
+ {id:'easy01',name:'Dejaste tu marca',description:'Hacer un gol o una asistencia.',type:'EASY_CONTRIBUTION',eligiblePositions:['DEF','MED','DEL'],revealText:'Sumó al menos un gol o una asistencia.'},
+ {id:'easy02',name:'Trabajo cumplido',description:'Ganar o recibir al menos un voto a figura.',type:'EASY_WIN_OR_VOTE',revealText:'Ganó o recibió al menos un voto a figura.'},
+ {id:'easy03',name:'Te reconocieron',description:'Recibir un voto a figura o un reconocimiento.',type:'EASY_RECOGNIZED',revealText:'Recibió al menos un voto a figura o un reconocimiento.'},
+ {id:'easy04',name:'Un paso adelante',description:'Superar el rendimiento de su anterior partido oficial.',type:'EASY_IMPROVEMENT',revealText:'Mejoró el rendimiento respecto de su anterior partido oficial.'},
+ {id:'easy05',name:'Desde atrás también',description:'Ganar o dar una asistencia jugando de defensor.',type:'EASY_WIN_OR_ASSIST',eligiblePositions:['DEF'],revealText:'Ganó o dio una asistencia jugando de defensor.'},
+ {id:'easy06',name:'Arco ganador',description:'Ganar o recibir un voto a figura jugando de arquero.',type:'EASY_WIN_OR_VOTE',eligiblePositions:['ARQ'],revealText:'Ganó o recibió un voto a figura jugando de arquero.'},
+].map(m=>({...m,params:{},difficulty:'facil',repeatable:true,eligiblePositions:m.eligiblePositions||null}));
+CHECKERS.EASY_CONTRIBUTION=(facts,i)=>facts[i].played&&(facts[i].goals>0||facts[i].assists>0);
+CHECKERS.EASY_WIN_OR_VOTE=(facts,i)=>facts[i].played&&(facts[i].win||facts[i].votes>0);
+CHECKERS.EASY_RECOGNIZED=(facts,i)=>facts[i].played&&(facts[i].votes>0||facts[i].awardsCount>0);
+CHECKERS.EASY_WIN_OR_ASSIST=(facts,i)=>facts[i].played&&(facts[i].win||facts[i].assists>0);
+CHECKERS.EASY_IMPROVEMENT=(facts,i)=>{
+ if(!facts[i].played)return false;
+ const previous=facts.slice(0,i).filter(f=>f.played).at(-1);
+ return !!previous&&facts[i].performance>previous.performance+1e-9;
+};

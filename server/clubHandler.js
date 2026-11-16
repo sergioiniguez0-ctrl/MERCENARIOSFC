@@ -1,3 +1,6 @@
+import {assignMissionIfNeeded,evaluateAssignment,toPublicView} from '../src/lib/secretMissionsStore.js';
+import {draftAsShellMatch} from '../src/lib/upcomingMatchday.js';
+import {isOfficialMode} from '../src/lib/sportsConfig.js';
 import {randomInt, randomUUID, createHash} from 'node:crypto';
 import {hashPin,verifyPin,validPin,constantEqual,signSession,readSession} from './security.js';
 import {normalizeProfile,assertRoster,MAX_PLAYERS,availableNumbers,repairRosterNumbers} from '../src/lib/playerProfile.js';
@@ -14,6 +17,29 @@ const publicKey=key=>PUBLIC_KEYS.includes(key)||/^awardBallots_[a-zA-Z0-9_-]+$/.
 export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
  const storage=db.collection('mercenarios').doc('shared').collection('storage');
  const credentials=db.collection('clubCredentials');
+ const missionStorage={
+  async get(key){const snap=await storage.doc(key).get();return {key,value:snap.exists?snap.data().value:null};},
+  async set(key,value){return db.runTransaction(async tx=>{const ref=storage.doc(key),snap=await tx.get(ref);if(snap.exists&&JSON.parse(value).status==='active'&&JSON.parse(snap.data().value).status!=='cancelled')return {key,value:snap.data().value};tx.set(ref,{value,revision:revision(snap)+1,updatedAt:now()});return {key,value};});},
+  async list(prefix){const snapshots=await storage.get();return {keys:snapshots.docs.map(d=>d.id).filter(k=>k.startsWith(prefix))};},
+ };
+ async function assignDraftMissions(draft){
+  if(!draft.confirmed||!isOfficialMode(draft.mode))return {assigned:0,errors:[]};
+  const roster=parse(await storage.doc('players').get())||[];
+  const matches=(parse(await storage.doc('matches').get())||[]).filter(m=>isOfficialMode(m.mode));
+  const votes=parse(await storage.doc('votes').get())||{};
+  const shell=draftAsShellMatch(draft,roster),errors=[];let assigned=0;
+  for(const id of draft.convocadoIds){const player=roster.find(p=>p.id===id);if(!player){errors.push('Jugador inexistente');continue;}try{const r=await assignMissionIfNeeded({storage:missionStorage,match:shell,player,allOfficialMatches:matches,votes});if(r)assigned++;else errors.push(player.name+': sin misión disponible');}catch(e){errors.push(player.name+': '+e.message);}}
+  return {assigned,errors};
+ }
+ async function settleMissions(match){
+  const errors=[];let completed=0,evaluated=0;
+  if(!match.missionsLinked)return {completed,evaluated,errors};
+  const matches=(parse(await storage.doc('matches').get())||[]).filter(m=>isOfficialMode(m.mode));
+  const votes=parse(await storage.doc('votes').get())||{};
+  for(const id of match.missionPlayerIds||[]){try{const record=await evaluateAssignment({storage:missionStorage,matchId:match.id,playerId:id,allOfficialMatches:matches,votes});if(record){evaluated++;if(record.status==='completed')completed++;}else errors.push('Sin asignación para '+id);}catch(e){errors.push(e.message);}}
+  return {completed,evaluated,errors};
+ }
+
  async function session(req){
   const token=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('club_session='))?.slice(13);
   const data=readSession(token,env.CLUB_SESSION_SECRET,now());
@@ -133,7 +159,9 @@ export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
      const elected=action==='closeVoting'?RECOGNITIONS.flatMap(c=>ballotLeaders(ballots,c.id).filter(w=>eligibleForAward(match,c.id).includes(w.playerId)).map(w=>({label:c.label,playerId:w.playerId,countsForRating:false,source:'vote',votes:w.votes}))):[];
      const next=matches.map(m=>m.id===id?{...m,votingOpen:action==='reopenVoting',awards:[...(m.awards||[]).filter(a=>a.source!=='vote'),...elected]}:m);
      const rev=revision(snap)+1;tx.set(ref,{value:JSON.stringify(next),revision:rev,updatedAt:now()});return {key:'matches',value:JSON.stringify(next),revision:rev,shared:true};
-    });return res.status(200).json(result);
+    });
+    if(action==='closeVoting'){const match=JSON.parse(result.value).find(m=>m.id===id);result.missions=await settleMissions(match);}
+    return res.status(200).json(result);
    }
    if(action==='vote'||action==='awardVote'){
     requirePost();requirePlayer(s);const id=body.matchId;if(!safeKey(id))throw error('Partido inválido.');
@@ -163,7 +191,7 @@ export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
     });return res.status(200).json(result);
    }
    if(action==='get'){
-    const key=req.query.key;accessKey(key,s);const snap=await storage.doc(key).get();let value=snap.exists?snap.data().value:null;if(key==='magazine'&&s?.role!=='admin'&&value)value=JSON.stringify(JSON.parse(value).filter(e=>e.status==='published'));return res.status(200).json({key,value,revision:revision(snap),shared:true});
+    const key=req.query.key;accessKey(key,s);const snap=await storage.doc(key).get();let value=snap.exists?snap.data().value:null;if(key.startsWith(MISSION_PREFIX)&&s?.role!=='admin'&&value)value=JSON.stringify(toPublicView(JSON.parse(value)));if(key==='magazine'&&s?.role!=='admin'&&value)value=JSON.stringify(JSON.parse(value).filter(e=>e.status==='published'));return res.status(200).json({key,value,revision:revision(snap),shared:true});
    }
    if(action==='list'){
     const prefix=req.query.prefix||'';
@@ -183,11 +211,10 @@ export function createClubHandler({db,env=process.env,now=()=>Date.now()}){
     if(key==='upcomingMatchday')validatePreview(value,parse(await storage.doc('players').get())||[],!!value.confirmed);
     if(key==='matches'){
      if(!Array.isArray(value))throw error('Partidos inválidos.');
-     for(const m of value){if(!safeKey(m.id)||!Array.isArray(m.participants)||!m.date||!m.mode)throw error('Revisá los datos del partido.');const ids=m.participants.map(p=>p.playerId);if(new Set(ids).size!==ids.length||(m.awards||[]).some(a=>!ids.includes(a.playerId)))throw error('Los participantes y reconocimientos del partido no son válidos.');}
+     for(const m of value){if(!safeKey(m.id)||!Array.isArray(m.participants)||!m.date||!m.mode)throw error('Revisá los datos del partido.');const ids=m.participants.map(p=>p.playerId);for(const team of ['A','B']){const captain=m.captains?.[team];if(captain&&!m.participants.some(p=>p.playerId===captain&&p.team===team))throw error('El capitán debe pertenecer a su equipo.');}if(new Set(ids).size!==ids.length||(m.awards||[]).some(a=>!ids.includes(a.playerId)))throw error('Los participantes y reconocimientos del partido no son válidos.');}
     }
     const ref=storage.doc(key);
-    const result=await db.runTransaction(async tx=>{const snap=await tx.get(ref);if(body.revision!==revision(snap))throw error('Los datos cambiaron. Actualizá y volvé a guardar.',409);const rev=revision(snap)+1;tx.set(ref,{value:JSON.stringify(value),revision:rev,updatedAt:now()});return {key,value:JSON.stringify(value),revision:rev,shared:true};});
-    return res.status(200).json(result);
+    const result=await db.runTransaction(async tx=>{const snap=await tx.get(ref);if(body.revision!==revision(snap))throw error('Los datos cambiaron. Actualizá y volvé a guardar.',409);const rev=revision(snap)+1;tx.set(ref,{value:JSON.stringify(value),revision:rev,updatedAt:now()});return {key,value:JSON.stringify(value),revision:rev,shared:true};});if(key==='upcomingMatchday'&&value?.confirmed)result.missions=await assignDraftMissions(value);return res.status(200).json(result);
    }
    throw error('Acción no disponible.',404);
   }catch(e){const status=e.status||400;res.status(status).json({error:status>=500?'Falta activar el acceso del club en el servidor.':e.message||'No se pudo completar la operación.'});}

@@ -16,7 +16,8 @@ export async function loadUpcomingMatchday(storage) {
 }
 
 export async function saveUpcomingMatchday(storage, draft) {
-  await storage.set(STORAGE_KEY, JSON.stringify(draft), true);
+  const result=await storage.set(STORAGE_KEY, JSON.stringify(draft), true);
+  if(result?.missions?.errors?.length)throw new Error("Convocatoria guardada, pero faltan misiones. Volvé a confirmar: "+result.missions.errors.join(" · "));
   return draft;
 }
 

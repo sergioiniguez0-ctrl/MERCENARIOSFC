@@ -34,49 +34,28 @@
 //   silenciosamente ni quedan activas para siempre). Una asignación
 //   `cancelled` no aparece como activa, completada ni fallida en ningún lado.
 //
-// ---------- LÍMITE DE SEGURIDAD REAL (sin cambios respecto a la entrega anterior) ----------
-// Este proyecto NO tiene Firebase Auth: la sesión de administrador es un
-// chequeo de contraseña que corre enteramente en el navegador (src/lib/auth.js)
-// y todas las lecturas/escrituras a Firestore pasan por `window.storage`
-// (src/lib/storagePolyfill.js) sin ningún token de identidad adjunto. Las
-// reglas de Firestore, sean cuales sean hoy, NO PUEDEN distinguir
-// "administrador" de "jugador" ni de "cualquier visitante": todos hablan con
-// Firestore exactamente igual. Esta entrega NO cambia Firebase Auth ni las
-// reglas de Firestore.
-//
-// Consecuencia concreta: alguien que abra la consola del navegador y use el
-// SDK de Firebase (con el mismo `firebaseConfig` que ya viaja público en el
-// build, como en cualquier app de Firebase del lado del cliente) puede leer
-// cualquier documento `missionAssignment:*` completo, `missionSnapshot`
-// incluido — exactamente igual que hoy puede leer `players` o `matches`. La
-// interfaz normal de la app nunca muestra el contenido de una misión activa
-// (`toPublicView` lo oculta salvo que ya esté `completed`), pero eso es una
-// protección de interfaz, NO un control de acceso del lado del servidor.
-export const SECURITY_LIMITATION_NOTICE =
-  "Sin Firebase Auth, cualquier cliente que hable con Firestore directamente (por ejemplo desde la consola del navegador) puede leer el documento completo de una asignación, incluido el contenido de la misión. La interfaz normal de la app nunca lo muestra, pero esto no equivale a un control de acceso del lado del servidor. Esta entrega no modifica Firebase Auth ni las reglas de Firestore.";
+// La API del club exige administrador para escribir y oculta el objetivo activo
+// en las lecturas de jugadores. El servidor asigna y evalúa las misiones.
+export const SECURITY_LIMITATION_NOTICE = "Los objetivos activos están protegidos por la API del club.";
 
-import { SECRET_MISSIONS, MISSIONS_CATALOG_VERSION, CHECKERS, buildSquadFacts, sortOfficialMatches, minPriorMatchesFor } from "./secretMissions.js";
+import { EASY_SECRET_MISSIONS, MISSIONS_CATALOG_VERSION, CHECKERS, buildSquadFacts, sortOfficialMatches, minPriorMatchesFor } from "./secretMissions.js";
 import { isOfficialMode, posGroupOf } from "./sportsConfig.js";
 
 const KEY_PREFIX = "missionAssignment:";
-const RECENT_WINDOW = 5; // últimas N asignaciones (de misiones repetibles) que no se repiten
+const RECENT_WINDOW = 2; // últimas N asignaciones (de misiones repetibles) que no se repiten
 
 function keyFor(matchId, playerId) {
   return `${KEY_PREFIX}${matchId}_${playerId}`;
 }
 
 async function loadAssignment(storage, matchId, playerId) {
-  try {
-    const res = await storage.get(keyFor(matchId, playerId), true);
-    return res && res.value ? JSON.parse(res.value) : null;
-  } catch (e) {
-    return null; // esa clave todavía no existe: no hay asignación para ese partido+jugador
-  }
+  const res = await storage.get(keyFor(matchId, playerId), true);
+  return res && res.value ? JSON.parse(res.value) : null;
 }
 
 async function saveAssignment(storage, record) {
-  await storage.set(keyFor(record.matchId, record.playerId), JSON.stringify(record), true);
-  return record;
+  const result=await storage.set(keyFor(record.matchId, record.playerId), JSON.stringify(record), true);
+  return result?.value ? JSON.parse(result.value) : record;
 }
 
 // Trae TODAS las asignaciones de un jugador, leyendo cada clave por separado
@@ -140,10 +119,11 @@ function eligibleMissions({ playerGroup, priorMatchesCount, playerAssignments, r
         .slice(-RECENT_WINDOW)
         .map((a) => a.missionId);
 
-  return SECRET_MISSIONS.filter((m) => {
+  return EASY_SECRET_MISSIONS.filter((m) => {
     if (m.eligiblePositions && !m.eligiblePositions.includes(playerGroup)) return false;
     if (!allowedDifficulties.includes(m.difficulty)) return false;
     if (priorMatchesCount < minPriorMatchesFor(m)) return false;
+    if (m.type === "EASY_IMPROVEMENT" && priorMatchesCount < 1) return false;
     if (!m.repeatable && everAssignedIds.has(m.id)) return false; // no repetible: nunca más
     if (m.repeatable && recentIds.includes(m.id)) return false; // repetible: evitar ventana reciente
     return true;
@@ -172,11 +152,11 @@ export async function assignMissionIfNeeded({ storage, match, player, allOfficia
   }
 
   const existing = await loadAssignment(storage, match.id, player.id);
-  if (existing) return existing;
+  if (existing) return existing.status === "cancelled" ? saveAssignment(storage, {...existing,status:"active"}) : existing;
 
   const sorted = sortOfficialMatches([...others, match]);
   const idx = sorted.findIndex((m) => m.id === match.id);
-  const priorMatchesCount = idx; // fechas oficiales del plantel antes de esta
+  const priorMatchesCount = sorted.slice(0,idx).filter(m=>m.participants.some(p=>p.playerId===player.id)).length; // fechas oficiales del plantel antes de esta
   const playerGroup = posGroupOf(player.position);
   const playerAssignments = await listAssignmentsForPlayer(storage, player.id);
 
@@ -257,8 +237,7 @@ export async function cancelAssignmentsForMatch(storage, matchId, playerIds) {
 export function toPublicView(assignment) {
   if (!assignment) return null;
   if (assignment.status === "completed") return assignment;
-  const { missionSnapshot, ...rest } = assignment;
-  return rest;
+  return Object.fromEntries(["id","matchId","playerId","status","assignedAt","completedAt","revealedAt"].filter(k=>k in assignment).map(k=>[k,assignment[k]]));
 }
 
 // Solo las misiones YA CUMPLIDAS Y REVELADAS de un jugador — esto es lo único
@@ -281,4 +260,9 @@ export async function getRevealedMissions(storage, playerId) {
 export async function hasActiveMission(storage, playerId) {
   const assignments = await listAssignmentsForPlayer(storage, playerId);
   return assignments.some((a) => a.status === "active");
+}
+
+export async function getMissionSummary(storage,playerId){
+ const records=await listAssignmentsForPlayer(storage,playerId);
+ return {active:records.some(r=>r.status==='active'),failed:records.filter(r=>r.status==='expired').length};
 }

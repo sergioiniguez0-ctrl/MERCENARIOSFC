@@ -10,14 +10,14 @@ body,
 
 body {
   margin: 0;
-  background: #0a0c10;
+  background: #0b100e;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
 }
 
 /* Interfaz: controles cómodos, jerarquía y áreas seguras de dispositivos. */
 :root { color-scheme: dark; }
-.mercenarios-app { font-family: system-ui, -apple-system, sans-serif !important; background: radial-gradient(ellipse at top, #101c30, #0a0c10 520px) !important; padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+.mercenarios-app { font-family: system-ui, -apple-system, sans-serif !important; background: radial-gradient(ellipse at top, #103524, #0b100e 520px) !important; padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
 .mercenarios-app .disp, .mercenarios-app .bebas { font-family: 'Oswald', system-ui, sans-serif; }
 .mercenarios-app .text-\[9px\], .mercenarios-app .text-\[10px\] { font-size: 12px; line-height: 1.45; }
 .mercenarios-app .text-\[11px\] { font-size: 12px; line-height: 1.45; }
@@ -25,14 +25,14 @@ body {
 .mercenarios-app .text-gray-600 { color: #8c9aaf; }
 .mercenarios-app .border-gray-800 { border-color: #263244; }
 .mercenarios-app button { touch-action: manipulation; }
-.mercenarios-app button:focus-visible, .mercenarios-app input:focus-visible, .mercenarios-app select:focus-visible, .mercenarios-app textarea:focus-visible { outline: 2px solid #77adff; outline-offset: 3px; }
+.mercenarios-app button:focus-visible, .mercenarios-app input:focus-visible, .mercenarios-app select:focus-visible, .mercenarios-app textarea:focus-visible { outline: 2px solid #6ee7b7; outline-offset: 3px; }
 .mercenarios-app input, .mercenarios-app select, .mercenarios-app textarea { font-size: 16px; min-height: 44px; }
 .app-header-inner { max-width: 760px; margin: auto; min-height: 76px; gap: 12px; }
 .app-header-inner button { min-height: 40px; }
 .app-main { max-width: 760px; padding-top: 24px; }
 .app-nav { margin: 0 auto; max-width: 760px; bottom: 12px; left: 12px; right: 12px; border: 1px solid #2a3850; border-radius: 22px; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); box-shadow: 0 12px 40px #0009; }
 .app-nav button { min-height: 56px; border-radius: 16px; gap: 5px; }
-.app-nav button[aria-current="page"] { background: #0d6efd25; color: #82b3ff !important; }
+.app-nav button[aria-current="page"] { background: #10b98125; color: #6ee7b7 !important; }
 .app-nav button:not([aria-current]) { color: #a0aec2 !important; }
 .app-nav button > span.absolute { display: none; }
 .club-hero { box-shadow: 0 16px 40px #0003; }
@@ -40,7 +40,7 @@ body {
 .hero-content > div:first-child { width: 64px; height: 64px; margin: 0; grid-row: span 2; }
 .hero-content > span { justify-self: start; margin-top: 10px; }
 .hero-content > .grid, .hero-content > .flex { grid-column: 1 / -1; }
-.hero-eyebrow { color: #83aff3; font-size: 10px; font-weight: 700; letter-spacing: .16em; margin-bottom: 7px; }
+.hero-eyebrow { color: #6ee7b7; font-size: 10px; font-weight: 700; letter-spacing: .16em; margin-bottom: 7px; }
 .hero-title h1 { font-size: clamp(22px, 5.5vw, 32px); }
 .hero-description { color: #b2bfd0; font-size: 13px; margin-top: 8px; }
 .hero-content > .flex { flex-wrap: wrap; gap: 8px 16px; }
@@ -52,14 +52,14 @@ body {
 .club-muted { color:#9dacbf; font-size:12px; line-height:1.6; }
 .club-error { color:#fda4af; font-size:13px; line-height:1.5; }
 .club-success { color:#86efac; font-size:13px; }
-.club-eyebrow { color:#82b3ff; font-size:10px; font-weight:800; letter-spacing:.15em; }
-.club-panel { border:1px solid #2b384c; background:linear-gradient(145deg,#151d2b,#10151f); padding:20px; border-radius:20px; margin-bottom:16px; }
+.club-eyebrow { color:#6ee7b7; font-size:10px; font-weight:800; letter-spacing:.15em; }
+.club-panel { border:1px solid #2b384c; background:linear-gradient(145deg,#17221d,#101a15); padding:20px; border-radius:20px; margin-bottom:16px; }
 .club-panel h3, .recognition-voting h3 { display:flex; align-items:center; gap:8px; color:#f1f5f9; font-weight:700; font-size:15px; margin-bottom:8px; }
 .club-input { display:block; width:100%; color:#e2e8f0; border:1px solid #344258; background:#0d1420; border-radius:12px; padding:11px 12px; margin-top:6px; }
 .club-input:disabled { opacity:.65; }
 .club-stack label, .journal-selector { font-size:13px; color:#c7d3e3; }
 .club-primary, .club-secondary { display:inline-flex; justify-content:center; align-items:center; gap:8px; border-radius:12px; padding:11px 15px; font-size:13px; font-weight:600; min-height:44px; cursor:pointer; }
-.club-primary { background:#2563eb; color:white; border:1px solid #467dec; }
+.club-primary { background:#078553; color:white; border:1px solid #10b981; }
 .club-secondary { background:#172132; color:#cbd5e1; border:1px solid #36465d; }
 .club-primary:disabled, .club-secondary:disabled { opacity:.45; cursor:default; }
 .club-row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
@@ -68,13 +68,13 @@ body {
 .club-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .club-page-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
 .club-page-title h2 { font-size:28px; font-family:'Oswald',system-ui,sans-serif; color:white; margin-top:5px; }
-.club-page-title>svg { color:#82b3ff; }
+.club-page-title>svg { color:#6ee7b7; }
 .club-section-links { display:flex; gap:8px; margin-bottom:24px; }
 .club-section-links button { flex:1; min-width:0; display:flex; gap:6px; align-items:center; justify-content:center; border:1px solid #2e3c51; background:#142033; color:#b9cbe5; border-radius:12px; padding:10px 6px; font-size:12px; min-height:44px; }
-.club-section-links button[aria-pressed=true] { border-color:#75a9ff; color:#a7c8ff; background:#1b3458; }
+.club-section-links button[aria-pressed=true] { border-color:#34d399; color:#a7f3d0; background:#143b2c; }
 .weekly-hub { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:20px; }
-.weekly-hub button { display:flex; flex-direction:column; gap:8px; text-align:left; padding:20px; border-radius:20px; border:1px solid #334660; background:linear-gradient(150deg,#172c4b,#121a29); color:#a7bbd6; font-size:12px; }
-.weekly-hub button:last-child { background:linear-gradient(150deg,#40222f,#171821); border-color:#614051; }
+.weekly-hub button { display:flex; flex-direction:column; gap:8px; text-align:left; padding:20px; border-radius:20px; border:1px solid #334660; background:linear-gradient(150deg,#123c29,#121e18); color:#a7bbd6; font-size:12px; }
+.weekly-hub button:last-child { background:linear-gradient(150deg,#173c2c,#171821); border-color:#286547; }
 .weekly-hub strong { color:#f1f5f9; font-size:17px; line-height:1.3; }
 .profile-preview { display:flex; align-items:center; gap:18px; border:1px solid #344258; padding:18px; border-radius:18px; overflow-wrap:anywhere; }
 .profile-preview strong { font-size:19px; color:#fff; }
@@ -85,7 +85,7 @@ body {
 .club-avatars { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; max-height:300px; overflow:auto; margin-top:10px; padding:5px; }
 .club-avatars button { aspect-ratio:1; border-radius:14px; border:2px solid #2b384c; background:#1b2534; padding:4px; }
 .club-avatars button[aria-pressed=true] { border-color:#80b3ff; background:#214072; }
-.club-avatars img { width:100%; height:100%; object-fit:contain; image-rendering:pixelated; }
+.club-avatars img { width:100%; height:100%; object-fit:contain; image-rendering:auto; }
 .avatar-picker { min-width:0; }
 .avatar-categories { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
 .avatar-categories button { padding:8px 10px; border:1px solid #35445c; border-radius:10px; background:#172232; color:#dce5f2; font-size:13px; }
@@ -96,7 +96,7 @@ body {
 .avatar-shirts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:14px 0; }
 .avatar-shirts button { display:flex; flex-direction:column; align-items:center; min-width:0; padding:6px; border:2px solid #2b384c; border-radius:12px; background:#1b2534; color:#dce5f2; }
 .avatar-shirts button[aria-pressed=true] { border-color:#80b3ff; background:#214072; }
-.avatar-shirts img { width:72px; height:72px; max-width:100%; object-fit:contain; image-rendering:pixelated; }
+.avatar-shirts img { width:72px; height:72px; max-width:100%; object-fit:contain; image-rendering:auto; }
 .avatar-shirts span { font-size:12px; text-align:center; }
 .avatar-more { margin:10px 0; }
 @media(min-width:640px) { .avatar-picker .club-avatars { grid-template-columns:repeat(5,minmax(0,1fr)); } .avatar-shirts { grid-template-columns:repeat(5,minmax(0,1fr)); } }
@@ -157,3 +157,21 @@ body {
 
 /* Código Mercenario: revista tipográfica, sin imágenes */
 .magazine-archive{flex:1;min-width:0}.magazine label{display:grid;gap:6px}.magazine details summary{cursor:pointer;font-weight:600}.cm-cover,.cm-reading{background:#f4f0e7;color:#172b41;border:1px solid #d6cfbf;border-radius:14px;padding:clamp(20px,5vw,42px)}.cm-cover header{text-align:center;border-bottom:2px solid #172b41;padding-bottom:18px;display:grid;gap:10px}.cm-cover header strong{font-family:Georgia,serif;font-weight:900;font-size:clamp(30px,8vw,64px);line-height:.95;letter-spacing:-1px}.cm-cover header span{font-size:11px;letter-spacing:2px}.cm-cover header small{font-size:12px}.cm-kicker{color:#873344;font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;margin:24px 0 12px}.cm-cover h1{font-family:Georgia,serif;font-size:clamp(34px,7vw,64px);line-height:1.06;font-weight:800;overflow-wrap:anywhere;margin:0 0 18px}.cm-deck{font-family:Georgia,serif;font-size:clamp(18px,4vw,24px);line-height:1.5;white-space:pre-line}.cm-score{border-block:1px solid #873344;margin:22px 0;padding:14px 0;text-align:center;font-weight:800;font-size:20px}.cm-teasers{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:18px;margin:24px 0}.cm-teasers button{text-align:left;padding:12px 0;border-top:1px solid #b4aa9b}.cm-teasers span{display:block;color:#873344;font-size:11px;text-transform:uppercase}.cm-teasers strong{font-family:Georgia,serif;font-size:22px;display:block;overflow-wrap:anywhere}.cm-cover>.club-primary{width:100%;background:#873344}.cm-reading article{max-width:680px;margin:0 auto 32px;scroll-margin-top:20px}.cm-reading h2{font-family:Georgia,serif;font-size:clamp(28px,6vw,42px);line-height:1.15;overflow-wrap:anywhere}.cm-reading article>p:not(.cm-kicker){font-family:Georgia,serif;font-size:18px;line-height:1.8;margin:18px 0;overflow-wrap:anywhere}.cm-facts{border-top:2px solid #873344;padding-top:20px;font-size:16px;line-height:1.7;overflow-wrap:anywhere}.cm-facts ul{list-style:disc;padding-left:20px}.magazine .club-input{width:100%;min-width:0}.magazine textarea{resize:vertical}.magazine .club-actions{flex-wrap:wrap}
+/* Identidad Mercenarios: verde, negro y blanco. */
+.mercenarios-app .club-eyebrow,.mercenarios-app .hero-eyebrow {color:#6ee7b7;}
+.mercenarios-app .app-nav button[aria-current="page"] {background:#10b98122;color:#6ee7b7!important;}
+.mercenarios-app .club-primary {background:#087c50;border-color:#10b981;}
+.mercenarios-app .weekly-hub button {background:linear-gradient(145deg,#133b29,#101a15);border-color:#2e6046;}
+.upgrade-metric {display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #294437;border-radius:12px;margin-bottom:8px;}
+.upgrade-metric span {font-size:13px;color:#b6c9bf;}
+.club-filter {display:flex;gap:8px;flex-wrap:wrap;}
+.upgrade-cards {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+.society-card {margin:0;overflow:hidden;}
+.society-avatars {display:flex;gap:10px;margin:16px 0;flex-wrap:wrap;}
+.rating-detail {padding:12px 0;border-bottom:1px solid #294437;}
+.rating-detail summary {cursor:pointer;min-height:36px;}
+.rating-detail summary strong {float:right;color:#6ee7b7;}
+@media(max-width:520px){.upgrade-cards{grid-template-columns:1fr;}.app-nav .disp{font-size:11px!important;}.club-grid-two{gap:8px;}}
+
+.avatar-picker .club-avatars {grid-template-columns:repeat(3,minmax(0,1fr));max-height:420px;}
+@media(min-width:640px){.avatar-picker .club-avatars{grid-template-columns:repeat(4,minmax(0,1fr));}}

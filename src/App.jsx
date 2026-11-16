@@ -1,3 +1,4 @@
+import { Societies, RatingRules, MoreMenu, RatingBreakdown } from "./components/Upgrade.jsx";
 import { Magazine } from './components/Magazine.jsx';
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
@@ -15,9 +16,9 @@ import { PlayerLogin, ProfileEditor, PinManagement, ChangePin, MatchPreview, Rec
 import { computeMarketValue, formatMarketValue, formatMarketVariation } from "./lib/marketValue";
 import { computeCommitment } from "./lib/commitment";
 import { computePotreroPaths, POTRERO_PATHS_CONFIG } from "./lib/potreroPaths";
-import { assignMissionIfNeeded, evaluateAssignment, cancelAssignmentsForMatch, getRevealedMissions, hasActiveMission } from "./lib/secretMissionsStore";
+import { assignMissionIfNeeded, evaluateAssignment, cancelAssignmentsForMatch, getRevealedMissions, hasActiveMission, getMissionSummary } from "./lib/secretMissionsStore";
 import { loadUpcomingMatchday, saveUpcomingMatchday, clearUpcomingMatchday, draftAsShellMatch } from "./lib/upcomingMatchday";
-import { computeMatchRating } from "./lib/rating";
+import { computeMatchRating, withRatingHistory } from "./lib/rating";
 
 import { CUSTOM_AVATARS } from "./lib/avatarCatalog.js";
 
@@ -319,7 +320,7 @@ function buildTeamOfMatch(match, players, votes) {
 
 function ratingColor(avg) {
   if (avg >= 8) return "#00C853";
-  if (avg >= 7) return "#0D6EFD";
+  if (avg >= 7) return "#10b981";
   if (avg >= 6.2) return "#FFD54F";
   return "#9CA3AF";
 }
@@ -467,7 +468,7 @@ function computeAchievements(player, matches, votes) {
   }, 0);
   const isLeyenda = mvpCount >= 3 && totalGoals + totalAssists >= 25;
   const list = [
-    { id: "gol1", label: "Primer gol", icon: Goal, unlocked: totalGoals >= 1, color: "#0D6EFD" },
+    { id: "gol1", label: "Primer gol", icon: Goal, unlocked: totalGoals >= 1, color: "#10b981" },
     { id: "hat", label: "Hat-trick", icon: Flame, unlocked: maxGoalsMatch >= 3, color: "#FFD54F" },
     { id: "poker", label: "Póker (4 goles en un partido)", icon: Flame, unlocked: maxGoalsMatch >= 4, color: "#FFD54F" },
     { id: "manita", label: "Manita (5 goles en un partido)", icon: Flame, unlocked: maxGoalsMatch >= 5, color: "#FFD54F" },
@@ -476,8 +477,8 @@ function computeAchievements(player, matches, votes) {
     { id: "maestro", label: "Maestro del pase (3 asist. en un partido)", icon: Target, unlocked: maxAssistsMatch >= 3, color: "#00C853" },
     { id: "asistHist", label: "Asistente histórico", icon: Target, unlocked: totalAssists >= 10, color: "#00C853" },
     { id: "potm", label: "Jugador del partido", icon: Crown, unlocked: mvpCount >= 1, color: "#FFD54F" },
-    { id: "streak", label: "Racha de MVP", icon: Sparkles, unlocked: maxMvpStreak >= 2, color: "#0D6EFD" },
-    { id: "perfecto", label: "Partido perfecto (MVP + gol + asistencia)", icon: Sparkles, unlocked: hasPerfectMatch, color: "#0D6EFD" },
+    { id: "streak", label: "Racha de MVP", icon: Sparkles, unlocked: maxMvpStreak >= 2, color: "#10b981" },
+    { id: "perfecto", label: "Partido perfecto (MVP + gol + asistencia)", icon: Sparkles, unlocked: hasPerfectMatch, color: "#10b981" },
     { id: "def", label: "Mejor defensor", icon: ShieldCheck, unlocked: cleanSheets >= 2, color: "#00C853" },
     { id: "leyenda", label: "Leyenda Mercenarios", icon: Crown, unlocked: isLeyenda, color: "#FFD54F" },
     { id: "keeper", label: "Mejor arquero", icon: Lock, unlocked: false, comingSoon: true, color: "#6b7280" },
@@ -538,7 +539,7 @@ const CARD_TIERS = {
   bronce: { label: "Bronce", emoji: "🥉", ring: "#D97706", grad: "linear-gradient(160deg, rgba(217,119,6,0.35), #1b1108 70%)" },
   plata: { label: "Plata", emoji: "🥈", ring: "#CBD5E1", grad: "linear-gradient(160deg, rgba(203,213,225,0.30), #14171c 70%)" },
   oro: { label: "Oro", emoji: "🥇", ring: "#FFD54F", grad: "linear-gradient(160deg, rgba(255,213,79,0.35), #1a1608 70%)" },
-  especial: { label: "Especial MVP", emoji: "⭐", ring: "#0D6EFD", grad: "linear-gradient(160deg, rgba(13,110,253,0.45), rgba(0,200,83,0.15) 55%, #0a0d11 100%)" },
+  especial: { label: "Especial MVP", emoji: "⭐", ring: "#10b981", grad: "linear-gradient(160deg, rgba(16,185,129,0.45), rgba(0,200,83,0.15) 55%, #0a0d11 100%)" },
 };
 
 // ---------- Helpers nuevos v2.0: forma reciente, movimiento en la tabla, jugador del mes ----------
@@ -718,7 +719,7 @@ function nextAchievementToUnlock(player, matches, votes) {
 // Cuando tengas el archivo del logo, subilo a /public (ej: /public/logo-mercenarios.png)
 // y reemplazá CLUB_LOGO_URL por esa ruta ("/logo-mercenarios.png"). Mientras sea null,
 // se sigue mostrando el ícono de escudo actual — cero cambios visuales hasta que se cargue el logo.
-const CLUB_LOGO_URL = null;
+const CLUB_LOGO_URL = "/logo-mercenarios.png";
 
 function ClubLogo({ size = 34 }) {
   if (CLUB_LOGO_URL) {
@@ -730,7 +731,7 @@ function ClubLogo({ size = 34 }) {
       />
     );
   }
-  return <Shield size={Math.round(size * 0.5)} className="text-blue-400" />;
+  return <Shield size={Math.round(size * 0.5)} className="text-emerald-400" />;
 }
 
 // ---------- Avatar de jugador (preparado para foto/imagen personalizada) ----------
@@ -742,9 +743,9 @@ function PlayerAvatar({ player, ring, size = 72 }) {
     return (
       <div
         className="rounded-full overflow-hidden flex items-center justify-center"
-        style={{ width: size, height: size, border: `2px solid ${ring}`, background: "linear-gradient(160deg,#161b22,#05070a)" }}
+        style={{ width: size, height: size, flexShrink: 0, padding: 2, border: `2px solid ${ring || "#16a36a"}`, background: "linear-gradient(160deg,#161b22,#05070a)" }}
       >
-        <img src={avatarSrc} alt={player.name} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "pixelated" }} />
+        <img src={avatarSrc} onError={e=>{if(e.currentTarget.src!==new URL(AVATARS.potrero_01,window.location.href).href)e.currentTarget.src=AVATARS.potrero_01;}} alt={player.name} style={{ width: "100%", height: "100%", objectFit: "contain", imageRendering: "auto" }} />
       </div>
     );
   }
@@ -755,8 +756,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [players, setPlayers] = useState([]);
-  const [matches, setMatches] = useState([]);
+  const [rawMatches, setMatches] = useState([]);
   const [votes, setVotes] = useState({});
+  const matches = useMemo(() => withRatingHistory(rawMatches, votes), [rawMatches, votes]);
   const [currentUserId, setCurrentUserId] = useState(null);
   const [tab, setTab] = useState("inicio");
   const [showWho, setShowWho] = useState(false);
@@ -991,17 +993,7 @@ export default function App() {
     if (removed.length) await cancelAssignmentsForMatch(window.storage, draft.id, removed);
     await saveUpcomingMatchday(window.storage, confirmed);
     setUpcomingMatchday(confirmed);
-    const shellMatch = draftAsShellMatch(confirmed, players);
-    const officialNow = onlyOfficialMatches(matches);
-    for (const playerId of confirmed.convocadoIds) {
-      const player = players.find((p) => p.id === playerId);
-      if (!player) continue;
-      try {
-        await assignMissionIfNeeded({ storage: window.storage, match: shellMatch, player, allOfficialMatches: officialNow, votes });
-      } catch (e) {
-        setError('No se pudo asignar la misión secreta a ' + player.name + ": " + e.message);
-      }
-    }
+
   }
 
   async function discardUpcomingDraft() {
@@ -1045,22 +1037,7 @@ export default function App() {
     const closedVotes = latestVotes.value ? JSON.parse(latestVotes.value) : {};
     setVotes(closedVotes);
 
-    // v3.8: recién ACÁ, con la votación ya cerrada y los votos ya cargados, se
-    // evalúan (una sola vez, de forma idempotente — evaluateAssignment no toca
-    // una asignación que ya dejó de estar "active") las misiones secretas
-    // vinculadas a este partido, si las tiene. Esto es lo que permite que
-    // las misiones de tipo VOTE_COUNT se comprueben con los votos reales.
-    const closedMatch = nextMatches.find((m) => m.id === matchId);
-    if (closedMatch && closedMatch.missionsLinked && closedMatch.missionPlayerIds) {
-      const officialNow = onlyOfficialMatches(nextMatches);
-      for (const playerId of closedMatch.missionPlayerIds) {
-        try {
-          await evaluateAssignment({ storage: window.storage, matchId, playerId, allOfficialMatches: officialNow, votes: closedVotes });
-        } catch (e) {
-          // No bloquea el cierre de votación por un error puntual de misiones.
-        }
-      }
-    }
+    if(result.missions?.errors?.length)setError("La votación se cerró, pero quedaron misiones pendientes: "+result.missions.errors.join(" · ")+". Usá Comprobar misiones para reintentar.");
   }
 
   async function reopenVoting(matchId) {
@@ -1079,13 +1056,13 @@ export default function App() {
 
   if (loading) {
     return (
-      <div style={{ background: "#0a0c10", minHeight: "100vh" }} className="flex items-center justify-center">
+      <div style={{ background: "#0b100e", minHeight: "100vh" }} className="flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div
             className="w-14 h-14 rounded-full flex items-center justify-center"
-            style={{ border: "2px solid #0D6EFD", boxShadow: "0 0 24px rgba(13,110,253,0.5)" }}
+            style={{ border: "2px solid #10b981", boxShadow: "0 0 24px rgba(16,185,129,0.5)" }}
           >
-            <Loader2 className="animate-spin" style={{ color: "#0D6EFD" }} size={24} />
+            <Loader2 className="animate-spin" style={{ color: "#10b981" }} size={24} />
           </div>
           <span className="disp text-xs text-gray-500 tracking-widest uppercase">Cargando plantel...</span>
         </div>
@@ -1094,7 +1071,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: "#0a0c10", minHeight: "100vh", fontFamily: "'Rajdhani', system-ui, sans-serif" }} className="mercenarios-app text-gray-200 pb-24">
+    <div style={{ background: "#0b100e", minHeight: "100vh", fontFamily: "'Rajdhani', system-ui, sans-serif" }} className="mercenarios-app text-gray-200 pb-24">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Oswald:wght@500;600;700&family=Bebas+Neue&display=swap');
         .disp { font-family: 'Oswald', system-ui, sans-serif; }
@@ -1103,7 +1080,7 @@ export default function App() {
           display:inline-flex; align-items:center; justify-content:center;
           width:34px; height:34px; border-radius:9999px;
           background: linear-gradient(145deg, #171c24, #0a0d12);
-          border:1.5px solid #0D6EFD; color:#6fa0ff;
+          border:1.5px solid #10b981; color:#6fa0ff;
           font-family:'Oswald',sans-serif; font-weight:600; font-size:13px;
           box-shadow: 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.08);
         }
@@ -1111,8 +1088,8 @@ export default function App() {
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 999px; }
         @keyframes pulse-glow {
-          0%, 100% { box-shadow: 0 0 24px rgba(13,110,253,0.5), inset 0 0 12px rgba(13,110,253,0.25); }
-          50% { box-shadow: 0 0 40px rgba(13,110,253,0.85), inset 0 0 18px rgba(13,110,253,0.4); }
+          0%, 100% { box-shadow: 0 0 24px rgba(16,185,129,0.5), inset 0 0 12px rgba(16,185,129,0.25); }
+          50% { box-shadow: 0 0 40px rgba(16,185,129,0.85), inset 0 0 18px rgba(16,185,129,0.4); }
         }
         @keyframes fade-in-up {
           from { opacity: 0; transform: translateY(8px); }
@@ -1129,12 +1106,12 @@ export default function App() {
           <div className="flex items-center gap-2.5">
             <div
               className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
-              style={{ background: "linear-gradient(145deg,#12161d,#05070a)", border: "1.5px solid #0D6EFD" }}
+              style={{ background: "linear-gradient(145deg,#12161d,#05070a)", border: "1.5px solid #10b981" }}
             >
-              <ClubLogo size={19} />
+              <ClubLogo size={38} />
             </div>
             <div>
-              <div className="disp text-base tracking-wide text-white leading-tight">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></div>
+              <div className="disp text-base tracking-wide text-white leading-tight">MERCENARIOS <span style={{ color: "#10b981" }}>FC</span></div>
               <div className="text-[10px] text-gray-500 -mt-0.5">Estadísticas del grupo</div>
             </div>
           </div>
@@ -1153,11 +1130,11 @@ export default function App() {
               className="w-8 h-8 rounded-full border flex items-center justify-center shrink-0"
               style={
                 isAdmin
-                  ? { background: "rgba(13,110,253,0.12)", borderColor: "#0D6EFD" }
+                  ? { background: "rgba(16,185,129,0.12)", borderColor: "#10b981" }
                   : { background: "rgba(255,255,255,0.04)", borderColor: "#374151" }
               }
             >
-              {isAdmin ? <ShieldCheck size={14} style={{ color: "#0D6EFD" }} /> : <Lock size={13} className="text-gray-500" />}
+              {isAdmin ? <ShieldCheck size={14} style={{ color: "#10b981" }} /> : <Lock size={13} className="text-gray-500" />}
             </button>
           </div>
         </div>
@@ -1176,6 +1153,9 @@ export default function App() {
           <button aria-pressed={tab === "diario"} onClick={() => setTab("diario")}><Newspaper size={16} /> Revista</button>
           <button aria-pressed={tab === "perfil" && profileId === currentUserId} onClick={() => { if (currentUserId) { setProfileId(currentUserId); setTab("perfil"); } else setShowWho(true); }}><UserRound size={16} /> Mi perfil</button>
         </div>
+        {tab === "sociedades" && <Societies players={players} matches={matches} votes={votes} Avatar={PlayerAvatar} />}
+        {tab === "reglamento" && <RatingRules />}
+        {tab === "mas" && <MoreMenu onGo={setTab} isAdmin={isAdmin} onAddMatch={()=>setShowAddMatch(true)} />}
         {tab === "previa" && <MatchPreview players={previewPlayers} draft={upcomingMatchday} matches={matches} isAdmin={isAdmin} currentUserId={currentUserId} onSave={saveUpcomingDraft} onConfirm={confirmUpcomingDraft} onDiscard={discardUpcomingDraft} Avatar={PlayerAvatar} onLogin={() => setShowWho(true)} />}
         {tab === "diario" && <Magazine isAdmin={isAdmin} players={players} matches={matches} votes={votes} draft={upcomingMatchday} onPreview={() => setTab("previa")} />}
 
@@ -1286,16 +1266,15 @@ export default function App() {
 
       <nav
         aria-label="Navegación principal"
-        className="app-nav fixed bottom-0 left-0 right-0 border-t border-gray-800 grid grid-cols-6 z-20"
+        className="app-nav fixed bottom-0 left-0 right-0 border-t border-gray-800 grid grid-cols-5 z-20"
         style={{ background: "#0b0d11f5", backdropFilter: "blur(12px)" }}
       >
         {[
           ["inicio", "Inicio", Home],
-          ["ranking", "Ranking", Trophy],
+          ["jugadores", "Jugadores", Users],
           ["partidos", "Partidos", CalendarDays],
-          ["estadisticas", "Stats", BarChart3],
-          ["jugadores", "Plantel", Users],
-          ["configuracion", "Ajustes", Settings],
+          ["sociedades", "Sociedades", Trophy],
+          ["mas", "Más", Settings],
         ].map(([key, label, Icon]) => {
           const active = tab === key;
           return (
@@ -1304,9 +1283,9 @@ export default function App() {
               aria-current={active ? "page" : undefined}
               onClick={() => setTab(key)}
               className="flex flex-col items-center justify-center py-2.5 gap-0.5 relative"
-              style={{ color: active ? "#0D6EFD" : "#6b7280" }}
+              style={{ color: active ? "#10b981" : "#6b7280" }}
             >
-              {active && <span className="absolute top-0 w-8 h-0.5 rounded-full" style={{ background: "#0D6EFD" }} />}
+              {active && <span className="absolute top-0 w-8 h-0.5 rounded-full" style={{ background: "#10b981" }} />}
               <Icon size={18} strokeWidth={active ? 2.4 : 2} />
               <span className="text-[11px] disp tracking-wide">{label}</span>
             </button>
@@ -1405,7 +1384,7 @@ function LoginModal({ onClose, onLogin, error }) {
             value={user}
             onChange={(e) => setUser(e.target.value)}
             autoComplete="username"
-            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-emerald-600"
           />
         </div>
         <div>
@@ -1417,7 +1396,7 @@ function LoginModal({ onClose, onLogin, error }) {
             onChange={(e) => setPass(e.target.value)}
             autoComplete="current-password"
             onKeyDown={(e) => e.key === "Enter" && submit()}
-            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-blue-600"
+            className="w-full mt-1 bg-gray-900/70 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200 outline-none focus:border-emerald-600"
           />
         </div>
         {error && <p className="text-xs text-red-400">{error}</p>}
@@ -1425,7 +1404,7 @@ function LoginModal({ onClose, onLogin, error }) {
           disabled={!user.trim() || !pass || submitting}
           onClick={submit}
           className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide flex items-center justify-center gap-2"
-          style={user.trim() && pass ? { background: "#0D6EFD" } : {}}
+          style={user.trim() && pass ? { background: "#10b981" } : {}}
         >
           {submitting ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
           Ingresar
@@ -1469,7 +1448,7 @@ function HomeTab({
     <div>
       <div
         className="club-hero relative rounded-[24px] overflow-hidden mb-5 border border-gray-800"
-        style={{ background: "radial-gradient(120% 140% at 50% -10%, rgba(13,110,253,0.35), rgba(11,11,11,0) 60%), linear-gradient(180deg, #10151c 0%, #0b0d11 100%)" }}
+        style={{ background: "radial-gradient(120% 140% at 50% -10%, rgba(16,185,129,0.35), rgba(11,11,11,0) 60%), linear-gradient(180deg, #10151c 0%, #0b0d11 100%)" }}
       >
         <div
           className="absolute inset-0 opacity-[0.12] pointer-events-none"
@@ -1484,13 +1463,13 @@ function HomeTab({
             className="w-20 h-20 rounded-full flex items-center justify-center mb-3"
             style={{
               background: "linear-gradient(145deg, #12161d, #05070a)",
-              border: "2px solid #0D6EFD",
+              border: "2px solid #10b981",
               
             }}
           >
             <ClubLogo size={40} />
           </div>
-          <div className="hero-title"><p className="hero-eyebrow">EL FÚTBOL DEL GRUPO</p><h1 className="disp text-3xl text-white tracking-wide leading-none">MERCENARIOS <span style={{ color: "#0D6EFD" }}>FC</span></h1><p className="hero-description">Cada fecha cuenta.</p></div>
+          <div className="hero-title"><p className="hero-eyebrow">EL FÚTBOL DEL GRUPO</p><h1 className="disp text-3xl text-white tracking-wide leading-none">MERCENARIOS <span style={{ color: "#10b981" }}>FC</span></h1><p className="hero-description">Cada fecha cuenta.</p></div>
           <span className="mt-2 text-[11px] tracking-[0.2em] text-gray-400 disp uppercase px-3 py-1 rounded-full border border-gray-700 bg-black/30">{season}</span>
 
           <div className="grid grid-cols-3 gap-2 w-full mt-6">
@@ -1508,7 +1487,7 @@ function HomeTab({
 
           {seasonTotals && (
             <div className="flex items-center gap-4 mt-3 text-[10px] text-gray-500">
-              <span className="flex items-center gap-1"><Goal size={11} style={{ color: "#0D6EFD" }} /> {seasonTotals.totalGoals} goles en la temporada</span>
+              <span className="flex items-center gap-1"><Goal size={11} style={{ color: "#10b981" }} /> {seasonTotals.totalGoals} goles en la temporada</span>
               <span className="flex items-center gap-1"><Users size={11} style={{ color: "#00C853" }} /> {seasonTotals.activePlayers} jugadores activos</span>
             </div>
           )}
@@ -1519,9 +1498,9 @@ function HomeTab({
         <button
           onClick={onGoRanking}
           className="text-left rounded-2xl p-4 border transition-transform active:scale-95 hover:-translate-y-0.5"
-          style={{ background: "linear-gradient(135deg, rgba(13,110,253,0.15), rgba(13,110,253,0.03))", borderColor: "rgba(13,110,253,0.35)" }}
+          style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.03))", borderColor: "rgba(16,185,129,0.35)" }}
         >
-          <Trophy size={20} className="text-blue-400 mb-2" />
+          <Trophy size={20} className="text-emerald-400 mb-2" />
           <div className="disp text-white text-sm">Ver ranking</div>
           <div className="text-[10px] text-gray-500 mt-0.5">Tabla individual</div>
         </button>
@@ -1558,7 +1537,7 @@ function HomeTab({
         <div className="mb-5">
           <div className="flex items-center justify-between mb-2">
             <h3 className="disp text-sm text-gray-300 tracking-wide uppercase">Top 3 del ranking</h3>
-            <button onClick={onGoRanking} className="text-[10px] flex items-center gap-0.5" style={{ color: "#0D6EFD" }}>Ver todo <ChevronRight size={12} /></button>
+            <button onClick={onGoRanking} className="text-[10px] flex items-center gap-0.5" style={{ color: "#10b981" }}>Ver todo <ChevronRight size={12} /></button>
           </div>
           <div className="grid grid-cols-3 gap-2">
             {podium3.map((p, i) => (
@@ -1588,7 +1567,7 @@ function HomeTab({
             </div>
             <div className="flex items-center justify-center gap-3 disp text-white text-2xl">
               <span className="text-sm text-gray-300 truncate max-w-[35%]">{lastMatch.teamAName}</span>
-              <span style={{ color: "#0D6EFD" }}>{teamGoalsFor(lastMatch, "A")} - {teamGoalsFor(lastMatch, "B")}</span>
+              <span style={{ color: "#10b981" }}>{teamGoalsFor(lastMatch, "A")} - {teamGoalsFor(lastMatch, "B")}</span>
               <span className="text-sm text-gray-300 truncate max-w-[35%]">{lastMatch.teamBName}</span>
             </div>
             {lastMatchMvp && (
@@ -1622,9 +1601,9 @@ function HomeTab({
             <button
               onClick={() => onOpenProfile(highlight.player.id)}
               className="w-full text-left rounded-2xl p-4 border flex items-center gap-3 transition-transform active:scale-95"
-              style={{ background: "rgba(13,110,253,0.08)", borderColor: "#0D6EFD40" }}
+              style={{ background: "rgba(16,185,129,0.08)", borderColor: "#10b98140" }}
             >
-              <div className="rounded-full p-2.5 shrink-0" style={{ background: "#0D6EFD22" }}>
+              <div className="rounded-full p-2.5 shrink-0" style={{ background: "#10b98122" }}>
                 <highlight.achievement.icon size={18} style={{ color: highlight.achievement.color }} />
               </div>
               <div className="min-w-0 flex-1">
@@ -1694,7 +1673,7 @@ function PodiumCard({ player, tier, onOpen }) {
       <div className="text-[8px] text-gray-500 mt-0.5">{player.pj} PJ</div>
       {tier === 1 && (
         <div className="w-full mt-1.5 flex flex-col gap-0.5">
-          <div className="h-1 w-full rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full" style={{ width: attackPct + "%", background: "#0D6EFD" }} /></div>
+          <div className="h-1 w-full rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full" style={{ width: attackPct + "%", background: "#10b981" }} /></div>
           <div className="h-1 w-full rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full" style={{ width: assistPct + "%", background: "#00C853" }} /></div>
         </div>
       )}
@@ -1704,7 +1683,7 @@ function PodiumCard({ player, tier, onOpen }) {
 
 function MovementBadge({ value }) {
   if (value === null || value === undefined) return <span className="text-[9px] text-gray-700">—</span>;
-  if (value === "nuevo") return <span className="text-[8px] text-blue-400 disp uppercase tracking-wide">Nuevo</span>;
+  if (value === "nuevo") return <span className="text-[8px] text-emerald-400 disp uppercase tracking-wide">Nuevo</span>;
   if (value > 0) return <span className="text-[10px] flex items-center gap-0.5" style={{ color: "#00C853" }}><TrendingUp size={11} /> {value}</span>;
   if (value < 0) return <span className="text-[10px] flex items-center gap-0.5" style={{ color: "#EF4444" }}><TrendingDown size={11} /> {Math.abs(value)}</span>;
   return <span className="text-[10px] flex items-center gap-0.5 text-gray-500"><Minus size={11} /></span>;
@@ -1765,7 +1744,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
         <Trophy size={20} style={{ color: "#FFD54F" }} />
       </div>
       <p className="text-[11px] text-gray-500 mb-3 leading-snug">
-        Nota por partido (2 a 10): arranca en 6 y suma/resta por gol (+1 × coef. de posición), asistencia (+0.6 × coef. de posición), valla invicta (+0.5, arq/def), ganar (+0.5), voto figura (+0.5 c/u, máx 3), reconocimientos (+0.5 c/u), gol en contra (−1). El coeficiente de posición (ver "Valor Mercenario") pondera solo los puntos que aportan el gol y la asistencia — el gol y la asistencia en sí siguen contando igual como estadística. Solo cuenta partidos <b>F8/F9</b>. El ranking ordena por <span style={{ color: "#0D6EFD" }}>promedio oficial</span> ponderado por la <b>Confianza</b> (0-100%, sube +20% por partido F8/F9 y +1% por partido F5/F6) + un pequeño aporte de presencia en <b>F5/F6</b> (hasta +0,3 por partido, no altera goles/asistencias/promedio). Con poca confianza el promedio pesa menos, así 1-2 partidos no superan a una trayectoria larga.
+        Nota por partido (2 a 10): base 6 y escala progresiva. Para subir a 7, 8, 9 y 10 se necesitan 1, 3, 7 y 15 puntos de mérito acumulados. Gol +0,7 × posición; asistencia +0,4 × posición; victoria +0,3; valla invicta ARQ/DEF +0,5; voto +0,2 (máx. 3); reconocimiento puntuable +0,3 (máx. 2). Superarse: +0,2 de mérito. Después se descuentan autogoles (−1) y derrota del capitán que eligió (−0,5). El reglamento completo está en Más.
       </p>
 
       <div className="flex gap-1.5 mb-2 overflow-x-auto">
@@ -1774,7 +1753,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
             key={key}
             onClick={() => setQuickTab(key)}
             className="text-xs px-3 py-1.5 rounded-full border shrink-0 disp"
-            style={quickTab === key ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+            style={quickTab === key ? { background: "#10b981", borderColor: "#10b981", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
           >
             {label}
           </button>
@@ -1786,7 +1765,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
             key={key}
             onClick={() => setPosFilter(key)}
             className="text-[11px] px-2.5 py-1 rounded-full border shrink-0"
-            style={posFilter === key ? { background: "rgba(13,110,253,0.18)", borderColor: "#0D6EFD", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
+            style={posFilter === key ? { background: "rgba(16,185,129,0.18)", borderColor: "#10b981", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
           >
             {label}
           </button>
@@ -1850,7 +1829,7 @@ function RankingTab({ ranking, leaders, matches, votes, movement, onOpenProfile 
               <MovementBadge value={movement ? movement[p.id] : null} />
             </div>
             <div className="col-span-3 flex justify-end">
-              <span className="disp text-xs font-bold rounded-md px-1.5 py-0.5" style={{ color: "#0b0b0b", background: quickTab === "general" ? ratingColor(p.avg) : "#0D6EFD" }}>
+              <span className="disp text-xs font-bold rounded-md px-1.5 py-0.5" style={{ color: "#0b0b0b", background: quickTab === "general" ? ratingColor(p.avg) : "#10b981" }}>
                 {valueFor(p)}
               </span>
             </div>
@@ -1877,7 +1856,7 @@ function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen
   const meta = CARD_TIERS[tier];
   return (
     <div
-      className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-blue-700/60 transition-colors"
+      className="flex items-center gap-3 rounded-2xl px-3 py-2.5 border border-gray-800 hover:border-emerald-700/60 transition-colors"
       style={{ background: "rgba(255,255,255,0.02)" }}
     >
       <button onClick={onOpen} className="flex items-center gap-3 flex-1 min-w-0 text-left">
@@ -1910,7 +1889,7 @@ function PlayerListCard({ p, t, avg, tier, trend, isNew, streak, isAdmin, onOpen
       </button>
       {isAdmin ? (
         <div className="flex items-center gap-1 shrink-0">
-          <button onClick={onEdit} className="p-1.5 text-gray-500 hover:text-blue-400"><Pencil size={14} /></button>
+          <button onClick={onEdit} className="p-1.5 text-gray-500 hover:text-emerald-400"><Pencil size={14} /></button>
           {isProtectedPlayer(p) ? (
             <span className="p-1.5 text-gray-700" title='"Cris 8" no se puede eliminar'><Lock size={14} /></span>
           ) : (
@@ -1971,7 +1950,7 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
           <button
             onClick={onAdd}
             className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
-            style={{ background: "#0D6EFD" }}
+            style={{ background: "#10b981" }}
           >
             <Plus size={14} /> Sumar
           </button>
@@ -2004,7 +1983,7 @@ function JugadoresTab({ players, totals, matches, votes, isAdmin, onAdd, onOpen,
             key={key}
             onClick={() => setPosFilter(key)}
             className="text-[11px] px-2.5 py-1 rounded-full border shrink-0"
-            style={posFilter === key ? { background: "rgba(13,110,253,0.18)", borderColor: "#0D6EFD", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
+            style={posFilter === key ? { background: "rgba(16,185,129,0.18)", borderColor: "#10b981", color: "#6fa0ff" } : { background: "transparent", borderColor: "#1f2937", color: "#6b7280" }}
           >
             {label}
           </button>
@@ -2050,6 +2029,7 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
   const previewRows = canLinkUpcoming ? ["A", "B"].flatMap(team => (upcomingMatchday.teams?.[team] || []).map(id => ({ playerId: id, position: players.find(p=>p.id===id)?.position || "VOD", team, goals: 0, assists: 0, ownGoals: 0 }))) : [];
   const [rows, setRows] = useState(initial?.participants || previewRows);
   const [awards, setAwards] = useState(initial?.awards || []);
+  const [captains, setCaptains] = useState(initial?.captains || {A:"", B:""});
   const [awardLabel, setAwardLabel] = useState("");
   const [awardPlayers, setAwardPlayers] = useState([]);
   const [saveError, setSaveError] = useState("");
@@ -2061,7 +2041,8 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
       if (!rows.some(r=>r.team==="A") || !rows.some(r=>r.team==="B")) throw new Error("Cargá al menos un jugador por equipo.");
       const participants = rows.map(r=>({...r, goals: Number(r.goals)||0, assists: Number(r.assists)||0, ownGoals: Number(r.ownGoals)||0}));
       if (participants.some(r=>[r.goals,r.assists,r.ownGoals].some(n=>!Number.isInteger(n)||n<0))) throw new Error("Goles y asistencias deben ser enteros positivos o cero.");
-      await onSave({date, mode, teamAName, teamBName, participants, awards}, linkUpcoming);
+      for (const team of ["A", "B"]) if(captains[team] && !participants.some(p=>p.team===team && p.playerId===captains[team])) throw new Error("El capitán debe pertenecer a su equipo.");
+      await onSave({date, mode, teamAName, teamBName, participants, awards, captains}, linkUpcoming);
     } catch(e) { setSaveError(e.message); } finally { setSaving(false); }
   }
 
@@ -2113,9 +2094,10 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
           <input value={teamBName} onChange={(e) => setTeamBName(e.target.value)} className="bg-gray-900/70 border border-gray-800 rounded-xl px-2 py-2 text-sm text-gray-200" />
         </div>
 
+        <section className="club-panel"><h3>Capitanes que eligieron los equipos</h3><p className="club-muted">Solo seleccioná al que armó el equipo. Si pierde: −0,5. Empate sin descuento.</p><div className="club-grid-two">{["A","B"].map(team=><label key={team}>Equipo {team}<select className="club-input" value={captains[team]} onChange={e=>setCaptains({...captains,[team]:e.target.value})}><option value="">Sin capitán registrado</option>{rows.filter(r=>r.team===team).map(r=><option key={r.playerId} value={r.playerId}>{players.find(p=>p.id===r.playerId)?.name}</option>)}</select></label>)}</div></section>
         <div className="flex items-center justify-between mt-1">
           <span className="text-[11px] text-gray-500">Jugadores del partido</span>
-          <button onClick={addRow} className="text-xs flex items-center gap-1" style={{ color: "#0D6EFD" }}><Plus size={13} /> Agregar</button>
+          <button onClick={addRow} className="text-xs flex items-center gap-1" style={{ color: "#10b981" }}><Plus size={13} /> Agregar</button>
         </div>
 
         <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
@@ -2175,7 +2157,7 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
                 key={q}
                 onClick={() => setAwardLabel(q)}
                 className="text-[10px] px-2 py-1 rounded-full border"
-                style={awardLabel === q ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+                style={awardLabel === q ? { background: "#10b981", borderColor: "#10b981", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
               >
                 {q}
               </button>
@@ -2197,7 +2179,7 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
                   key={pl.id}
                   onClick={() => toggleAwardPlayer(pl.id)}
                   className="text-[10px] px-2 py-1 rounded-full border"
-                  style={sel ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+                  style={sel ? { background: "#10b981", borderColor: "#10b981", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
                 >
                   {pl.name}
                 </button>
@@ -2205,14 +2187,14 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
             })}
           </div>
           <p className="text-[10px] text-gray-600 mt-1">Elegí uno o más jugadores (para duplas, elegí a los dos).</p>
-          <button onClick={addAward} className="mt-2 text-xs flex items-center gap-1" style={{ color: "#0D6EFD" }}><Plus size={13} /> Agregar reconocimiento</button>
+          <button onClick={addAward} className="mt-2 text-xs flex items-center gap-1" style={{ color: "#10b981" }}><Plus size={13} /> Agregar reconocimiento</button>
 
           <div className="flex flex-col gap-1 mt-2">
             {awards.map((a, i) => {
               const pl = players.find((p) => p.id === a.playerId);
               return (
                 <div key={i} className="flex items-center justify-between text-xs bg-gray-900/60 border border-gray-800 rounded-lg px-2 py-1.5">
-                  <span className="text-gray-300">{a.label} · <span style={{ color: "#0D6EFD" }}>{pl?.name}</span></span>
+                  <span className="text-gray-300">{a.label} · <span style={{ color: "#10b981" }}>{pl?.name}</span></span>
                   <button onClick={() => removeAward(i)} className="text-gray-600"><X size={13} /></button>
                 </div>
               );
@@ -2235,7 +2217,7 @@ function AddMatchModal({ onClose, onSave, players, initial, upcomingMatchday }) 
           disabled={rows.length === 0 || saving}
           onClick={submitMatch}
           className="mt-1 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl py-2.5 text-sm disp tracking-wide"
-          style={rows.length > 0 ? { background: "#0D6EFD" } : {}}
+          style={rows.length > 0 ? { background: "#10b981" } : {}}
         >
           {isEdit ? "Guardar cambios" : "Guardar partido"}
         </button>
@@ -2254,7 +2236,7 @@ function PartidosTab({ matches, players, votes, currentUserId, isAdmin, onAdd, o
           <button
             onClick={onAdd}
             className="flex items-center gap-1 text-xs text-white px-3 py-1.5 rounded-full transition-transform active:scale-95"
-            style={{ background: "#0D6EFD" }}
+            style={{ background: "#10b981" }}
           >
             <Plus size={14} /> Cargar
           </button>
@@ -2307,14 +2289,14 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
 
   return (
     <div className="rounded-2xl border border-gray-800 overflow-hidden" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))" }}>
-      <div className="px-4 pt-3 pb-4" style={{ background: "radial-gradient(120% 100% at 50% 0%, rgba(13,110,253,0.14), transparent 65%)" }}>
+      <div className="px-4 pt-3 pb-4" style={{ background: "radial-gradient(120% 100% at 50% 0%, rgba(16,185,129,0.14), transparent 65%)" }}>
         <div className="flex items-center justify-between text-[10px] text-gray-500 mb-3">
           <span>{new Date(m.date + "T00:00:00").toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}</span>
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded-full bg-gray-900/80 border border-gray-800 disp tracking-wide">{m.mode}</span>
             {isAdmin && (
               <div className="flex items-center gap-1.5">
-                <button onClick={onEdit} className="text-gray-500 hover:text-blue-400"><Pencil size={13} /></button>
+                <button onClick={onEdit} className="text-gray-500 hover:text-emerald-400"><Pencil size={13} /></button>
                 <button onClick={onDelete} className="text-gray-500 hover:text-red-400"><Trash2 size={13} /></button>
               </div>
             )}
@@ -2322,7 +2304,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
         </div>
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1 flex flex-col items-center gap-1.5 min-w-0">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center disp text-xs" style={{ background: "linear-gradient(145deg,#12161d,#05070a)", border: "1.5px solid #0D6EFD", color: "#6fa0ff" }}>
+            <div className="w-10 h-10 rounded-full flex items-center justify-center disp text-xs" style={{ background: "linear-gradient(145deg,#12161d,#05070a)", border: "1.5px solid #10b981", color: "#6fa0ff" }}>
               {initials(m.teamAName)}
             </div>
             <span className="text-[11px] text-gray-300 truncate max-w-full">{m.teamAName}</span>
@@ -2354,7 +2336,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
           <div className="flex flex-col gap-1.5 mb-2.5">
             {scorers.length > 0 && (
               <div className="flex items-start gap-2 text-[11px]">
-                <Goal size={13} style={{ color: "#0D6EFD" }} className="mt-0.5 shrink-0" />
+                <Goal size={13} style={{ color: "#10b981" }} className="mt-0.5 shrink-0" />
                 <span className="text-gray-400 flex-1">{scorers.map((s) => `${displayName(s.pl)}${s.goals > 1 ? ` (${s.goals})` : ""}`).join(", ")}</span>
               </div>
             )}
@@ -2379,7 +2361,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
               const pl = players.find((p) => p.id === a.playerId);
               return (
                 <span key={i} className="text-[10px] bg-gray-900/70 border border-gray-800 text-gray-400 rounded-full px-2 py-0.5">
-                  {a.label}: <span style={{ color: "#0D6EFD" }}>{pl?.name}</span>
+                  {a.label}: <span style={{ color: "#10b981" }}>{pl?.name}</span>
                 </span>
               );
             })}
@@ -2397,7 +2379,7 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
             <div className="text-xs text-gray-400 flex items-center gap-1">
               <Lock size={12} /> Votación cerrada
               {mvpEntries[0] && (
-                <span className="ml-1" style={{ color: "#0D6EFD" }}>
+                <span className="ml-1" style={{ color: "#10b981" }}>
                   · Figura: {mvpPlayer?.name || "—"} ({mvpEntries[0][1]} votos)
                 </span>
               )}
@@ -2429,9 +2411,12 @@ function MatchCard({ m, players, votes, currentUserId, isAdmin, onVote, onCloseV
           )}
         </div>
 
+        {isOfficialMode(m.mode) && <RatingBreakdown match={m} players={players} votes={votes[m.id]} />}
+        {isOfficialMode(m.mode) && !m.missionsLinked && <p className="club-muted">Esta fecha no tiene misiones vinculadas: deben asignarse al confirmar la convocatoria antes de jugar.</p>}
+        {isAdmin && !m.votingOpen && m.missionsLinked && <button className="club-secondary" onClick={()=>onCloseVoting(m.id)}>Comprobar misiones</button>}
         <RecognitionVoting match={m} players={players} currentUserId={currentUserId} onLogin={onLogin} />
         <div className="border-t border-gray-900 pt-2.5 mt-2.5">
-          <button onClick={() => setShowTeam((v) => !v)} className="text-xs flex items-center gap-1 disp tracking-wide" style={{ color: "#0D6EFD" }}>
+          <button onClick={() => setShowTeam((v) => !v)} className="text-xs flex items-center gap-1 disp tracking-wide" style={{ color: "#10b981" }}>
             <Shirt size={13} /> Equipo de la Fecha ({formationLabel(m.mode)}) {showTeam ? "▲" : "▼"}
           </button>
           {showTeam && <TeamOfMatch team={team} />}
@@ -2482,7 +2467,7 @@ function VoteRow({ match, players, onVote }) {
         disabled={!sel}
         onClick={() => onVote(sel)}
         className="text-xs disabled:bg-gray-800 disabled:text-gray-600 text-white px-3 py-1.5 rounded-xl flex items-center gap-1"
-        style={sel ? { background: "#0D6EFD" } : {}}
+        style={sel ? { background: "#10b981" } : {}}
       >
         <Vote size={12} /> Votar
       </button>
@@ -2535,17 +2520,17 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="disp text-white text-2xl tracking-wide">Estadísticas</h2>
-        <BarChart3 size={20} style={{ color: "#0D6EFD" }} />
+        <BarChart3 size={20} style={{ color: "#10b981" }} />
       </div>
 
       <div className="flex flex-col gap-2 mb-6">
-        <StatLeaderCard icon={Goal} label="Máximo goleador" entry={topScorer} value={topScorer?.t.goals ?? "—"} suffix="goles reales" accent="#0D6EFD" onOpen={() => topScorer && onOpenProfile(topScorer.p.id)} />
+        <StatLeaderCard icon={Goal} label="Máximo goleador" entry={topScorer} value={topScorer?.t.goals ?? "—"} suffix="goles reales" accent="#10b981" onOpen={() => topScorer && onOpenProfile(topScorer.p.id)} />
         <StatLeaderCard icon={Target} label="Máximo asistidor" entry={topAssist} value={topAssist?.t.assists ?? "—"} suffix="asistencias reales" accent="#00C853" onOpen={() => topAssist && onOpenProfile(topAssist.p.id)} />
         <StatLeaderCard icon={ShieldCheck} label="Mejor arquero" entry={bestKeeper} value={bestKeeper ? (cleanSheetsMap[bestKeeper.p.id] || 0) : "—"} suffix="vallas invictas" accent="#FFD54F" onOpen={() => bestKeeper && onOpenProfile(bestKeeper.p.id)} />
         <StatLeaderCard icon={Crown} label="Más MVP" entry={mostMVP} value={mostMVP?.t.votes ?? "—"} suffix={mostMVP ? `votos figura · ${mostMVP.t.mvpPoints} pts` : "votos figura"} accent="#FFD54F" onOpen={() => mostMVP && onOpenProfile(mostMVP.p.id)} />
-        <StatLeaderCard icon={CalendarDays} label="Más partidos" entry={mostMatches} value={mostMatches?.t.pj ?? "—"} suffix="PJ" accent="#0D6EFD" onOpen={() => mostMatches && onOpenProfile(mostMatches.p.id)} />
+        <StatLeaderCard icon={CalendarDays} label="Más partidos" entry={mostMatches} value={mostMatches?.t.pj ?? "—"} suffix="PJ" accent="#10b981" onOpen={() => mostMatches && onOpenProfile(mostMatches.p.id)} />
         <StatLeaderCard icon={Star} label="Promedio más alto" entry={highestAvg} value={highestAvg ? (highestAvg.t.score / highestAvg.t.pj).toFixed(1) : "—"} suffix="nota" accent="#00C853" onOpen={() => highestAvg && onOpenProfile(highestAvg.p.id)} />
-        <StatLeaderCard icon={Sparkles} label="Jugador revelación" entry={breakout} value={breakout ? (breakout.t.score / breakout.t.pj).toFixed(1) : "—"} suffix="nota inicial" accent="#0D6EFD" onOpen={() => breakout && onOpenProfile(breakout.p.id)} />
+        <StatLeaderCard icon={Sparkles} label="Jugador revelación" entry={breakout} value={breakout ? (breakout.t.score / breakout.t.pj).toFixed(1) : "—"} suffix="nota inicial" accent="#10b981" onOpen={() => breakout && onOpenProfile(breakout.p.id)} />
       </div>
 
       <h3 className="disp text-white text-lg tracking-wide mb-2 flex items-center gap-2">📚 Récords Mercenarios FC</h3>
@@ -2553,7 +2538,7 @@ function EstadisticasTab({ leaders, idealTeam, onOpenProfile }) {
         <StatLeaderCard icon={Goal} label="Más goles en un partido" entry={bestSingleGoal} value={bestSingleGoal?.value ?? "—"} suffix="goles en una fecha" accent="#EF4444" onOpen={() => bestSingleGoal && onOpenProfile(bestSingleGoal.p.id)} />
         <StatLeaderCard icon={Target} label="Más asistencias en un partido" entry={bestSingleAssist} value={bestSingleAssist?.value ?? "—"} suffix="asistencias en una fecha" accent="#00C853" onOpen={() => bestSingleAssist && onOpenProfile(bestSingleAssist.p.id)} />
         <StatLeaderCard icon={Flame} label="Mayor racha goleadora" entry={bestStreak} value={bestStreak?.ach.maxGoalStreak ?? "—"} suffix="partidos seguidos anotando" accent="#FFD54F" onOpen={() => bestStreak && onOpenProfile(bestStreak.p.id)} />
-        <StatLeaderCard icon={Sparkles} label="Mejor participación ofensiva" entry={mostOffensive} value={mostOffensive?.t.offensive ?? "—"} suffix="pts (goles + asist. ponderados)" accent="#0D6EFD" onOpen={() => mostOffensive && onOpenProfile(mostOffensive.p.id)} />
+        <StatLeaderCard icon={Sparkles} label="Mejor participación ofensiva" entry={mostOffensive} value={mostOffensive?.t.offensive ?? "—"} suffix="pts (goles + asist. ponderados)" accent="#10b981" onOpen={() => mostOffensive && onOpenProfile(mostOffensive.p.id)} />
         <StatLeaderCard icon={Medal} label="Más logros obtenidos" entry={mostAchievements} value={mostAchievements ? mostAchievements.ach.list.filter((i) => i.unlocked).length : "—"} suffix="logros desbloqueados" accent="#FFD54F" onOpen={() => mostAchievements && onOpenProfile(mostAchievements.p.id)} />
       </div>
 
@@ -2568,7 +2553,7 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="disp text-white text-2xl tracking-wide">Configuración</h2>
-        <Settings size={20} style={{ color: "#0D6EFD" }} />
+        <Settings size={20} style={{ color: "#10b981" }} />
       </div>
 
       <div className="rounded-2xl border border-gray-800 p-4 mb-3" style={{ background: "rgba(255,255,255,0.03)" }}>
@@ -2576,8 +2561,8 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
         <div className="flex items-center gap-3">
           {currentPlayer ? (
             <div className="relative shrink-0">
-              <PlayerAvatar player={currentPlayer} ring="#0D6EFD" size={40} />
-              <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 16, height: 16, fontSize: 8, background: "#0b0d11", border: "1.5px solid #0D6EFD", color: "#6fa0ff" }}>{currentPlayer.number}</span>
+              <PlayerAvatar player={currentPlayer} ring="#10b981" size={40} />
+              <span className="absolute -bottom-1 -right-1 rounded-full flex items-center justify-center disp" style={{ width: 16, height: 16, fontSize: 8, background: "#0b0d11", border: "1.5px solid #10b981", color: "#6fa0ff" }}>{currentPlayer.number}</span>
             </div>
           ) : (
             <span className="jersey" style={{ width: 40, height: 40 }}>?</span>
@@ -2586,7 +2571,7 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
             <div className="disp text-white text-sm truncate">{currentPlayer ? currentPlayer.name : "Sin elegir"}</div>
             <div className="text-[10px] text-gray-500">{currentPlayer ? posLabel(currentPlayer.position) : "Elegí quién sos para votar"}</div>
           </div>
-          <button onClick={onChangeUser} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#0D6EFD" }}>Cambiar</button>
+          <button onClick={onChangeUser} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#10b981" }}>Cambiar</button>
         </div>
       </div>
 
@@ -2602,8 +2587,8 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
         <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Acceso administrador</div>
         {isAdmin ? (
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(13,110,253,0.12)", border: "1.5px solid #0D6EFD" }}>
-              <ShieldCheck size={16} style={{ color: "#0D6EFD" }} />
+            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(16,185,129,0.12)", border: "1.5px solid #10b981" }}>
+              <ShieldCheck size={16} style={{ color: "#10b981" }} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="disp text-white text-sm">Sesión de administrador activa</div>
@@ -2622,7 +2607,7 @@ function ConfiguracionTab({ players, currentPlayer, onChangeUser, season, isAdmi
               <div className="text-sm text-gray-300">Administración deportiva</div>
               <div className="text-[10px] text-gray-500">Iniciá sesión para cargar jugadores y partidos</div>
             </div>
-            <button onClick={onLogin} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#0D6EFD" }}>Ingresar</button>
+            <button onClick={onLogin} className="text-xs px-3 py-1.5 rounded-full text-white shrink-0" style={{ background: "#10b981" }}>Ingresar</button>
           </div>
         )}
       </div>
@@ -2729,7 +2714,7 @@ function PlayerCard({ player, players, t, matches, votes, isMvpLeader }) {
   const variationColor = mv.lastVariation > 0 ? "#00C853" : mv.lastVariation < 0 ? "#FF5252" : "#9ca3af";
 
   return (
-    <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: player.profileColor ? `linear-gradient(150deg, ${player.profileColor}55, #10151f 75%)` : meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
+    <div className="relative rounded-[24px] p-4 border-2 overflow-hidden" style={{ background: player.profileColor ? `linear-gradient(150deg, ${player.profileColor}55, #101a15 75%)` : meta.grad, borderColor: meta.ring, boxShadow: `0 16px 40px -16px ${meta.ring}88` }}>
       <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-30 pointer-events-none" style={{ background: `radial-gradient(circle, ${meta.ring}, transparent 70%)`, filter: "blur(6px)" }} />
 
       <div className="relative flex items-start justify-between">
@@ -2819,11 +2804,11 @@ function PersonalRecords({ player, matches, votes, mvpPoints }) {
   const { maxGoalsMatch, maxAssistsMatch, maxMvpStreak, maxGoalStreak, bestRating } = computeAchievements(player, matches, votes);
   const rows = [
     { label: "Mejor puntuación en un partido", value: bestRating.toFixed(1), icon: Star, color: "#FFD54F" },
-    { label: "Más goles en un partido", value: maxGoalsMatch, icon: Goal, color: "#0D6EFD" },
+    { label: "Más goles en un partido", value: maxGoalsMatch, icon: Goal, color: "#10b981" },
     { label: "Más asistencias en un partido", value: maxAssistsMatch, icon: Target, color: "#00C853" },
     { label: "Mayor racha goleadora", value: maxGoalStreak, icon: Flame, color: "#EF4444" },
     { label: "Mayor racha de MVP", value: maxMvpStreak, icon: Crown, color: "#FFD54F" },
-    { label: "Puntos acumulados por votos MVP", value: mvpPoints ?? 0, icon: Sparkles, color: "#0D6EFD" },
+    { label: "Puntos acumulados por votos MVP", value: mvpPoints ?? 0, icon: Sparkles, color: "#10b981" },
   ];
   return (
     <div className="flex flex-col gap-1.5">
@@ -2893,19 +2878,19 @@ function PotreroPathsList({ player, matches, votes }) {
 }
 
 function SecretMissionsPanel({ player }) {
-  const [state, setState] = useState({ loading: true, revealed: [], active: false });
+  const [state, setState] = useState({ loading: true, revealed: [], active: false, failed: 0, error: "" });
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [revealed, active] = await Promise.all([
+        const [revealed, summary] = await Promise.all([
           getRevealedMissions(window.storage, player.id),
-          hasActiveMission(window.storage, player.id),
+          getMissionSummary(window.storage, player.id),
         ]);
-        if (!cancelled) setState({ loading: false, revealed, active });
+        if (!cancelled) setState({ loading: false, revealed, ...summary, error: "" });
       } catch (e) {
-        if (!cancelled) setState({ loading: false, revealed: [], active: false });
+        if (!cancelled) setState({ loading: false, revealed: [], active: false, failed: 0, error: "Ingresá con tu PIN para consultar tus misiones. Si ya ingresaste, probá actualizar." });
       }
     })();
     return () => {
@@ -2917,6 +2902,8 @@ function SecretMissionsPanel({ player }) {
 
   return (
     <div>
+      {state.error && <p className="club-muted">{state.error}</p>}
+      {state.failed>0 && <p className="club-muted">Misiones no cumplidas: {state.failed}. Sus objetivos siguen ocultos. Sin descuento de puntos.</p>}
       {state.active && (
         <div className="text-[11px] text-gray-400 mb-3 rounded-xl border border-gray-800 p-2.5" style={{ background: "rgba(255,255,255,0.03)" }}>
           Tenés una misión activa para la próxima fecha.
@@ -2982,7 +2969,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
               key={key}
               onClick={() => setSection(key)}
               className="text-xs px-3 py-1.5 rounded-full border shrink-0 disp"
-              style={active ? { background: "#0D6EFD", borderColor: "#0D6EFD", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
+              style={active ? { background: "#10b981", borderColor: "#10b981", color: "#fff" } : { background: "rgba(255,255,255,0.03)", borderColor: "#1f2937", color: "#9ca3af" }}
             >
               {label}
             </button>
@@ -3087,7 +3074,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
                   <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#6b7280" }} tickFormatter={(d) => d.slice(5)} />
                   <YAxis domain={[2, 10]} tick={{ fontSize: 9, fill: "#6b7280" }} width={24} />
                   <Tooltip contentStyle={{ background: "#0c0f14", border: "1px solid #1f2937", fontSize: 11 }} labelStyle={{ color: "#9ca3af" }} />
-                  <Line type="monotone" dataKey="score" stroke="#0D6EFD" strokeWidth={2.5} dot={{ r: 3, fill: "#0D6EFD" }} />
+                  <Line type="monotone" dataKey="score" stroke="#10b981" strokeWidth={2.5} dot={{ r: 3, fill: "#10b981" }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -3122,8 +3109,8 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
           <h3 className="disp text-sm text-gray-300 mb-1 tracking-wide uppercase">Misiones secretas</h3>
           <p className="text-[10px] text-gray-500 mb-3 leading-snug">
             Antes de cada fecha se asigna una misión secreta oculta a cada convocado — nadie ve su contenido hasta que se cumple.
-            Se revela solo si se completó; si no, caduca en silencio, sin penalidad. No afectan el Puntaje ni el Valor Mercenario.
-            La asignación automática antes del partido se activa cuando esté lista la Central de la Fecha.
+            Se revela solo si se completó; si no, figura como no cumplida sin revelar el objetivo y sin penalidad. No afectan el Puntaje ni el Valor Mercenario.
+            Se asignan al confirmar los convocados y se comprueban al cerrar la votación. Son objetivos de una sola fecha, sin rachas ni combinaciones difíciles.
           </p>
           <SecretMissionsPanel player={profilePlayer} />
         </div>
@@ -3152,7 +3139,7 @@ function PerfilTab({ players, profilePlayer, setProfileId, totals, history, onBa
               ["Nombre", profilePlayer.name],
               ["Apodo", profilePlayer.nickname || "Sin especificar"],
               ["Posición secundaria", posLabel(profilePlayer.secondaryPosition) || "Sin especificar"],
-              ["Frase", profilePlayer.bio || "Sin especificar"],
+              ["Descripción", profilePlayer.bio || "Sin especificar"],
               ["Dorsal", `#${profilePlayer.number}`],
               ["Posición", posLabel(profilePlayer.position)],
               ["Edad", profilePlayer.age ? `${profilePlayer.age} años` : "No especificado"],
